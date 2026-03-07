@@ -117,12 +117,17 @@ class GitProvider(ABC):
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for result in results:
+        failed_branches = []
+        for branch, result in zip(branches, results):
             if isinstance(result, Exception):
+                failed_branches.append(branch)
                 continue
             for commit in result:
                 if commit.sha not in seen:
                     seen[commit.sha] = commit
+
+        if failed_branches and not seen:
+            raise RuntimeError(f"All branch fetches failed (e.g. {failed_branches[0]}: {results[branches.index(failed_branches[0])]})")
 
         # Sort by date descending (newest first)
         all_commits = sorted(
@@ -159,7 +164,7 @@ class GitHubProvider(GitProvider):
         return h
 
     def commit_url(self, owner: str, repo: str, sha: str) -> str:
-        return f"https://github.com/{owner}/{repo}/commit/{sha}"
+        return f"https://github.com/{quote(owner, safe='')}/{quote(repo, safe='')}/commit/{quote(sha, safe='')}"
 
     async def fetch_repo_info(self, owner: str, repo: str) -> RepoInfo:
         async with httpx.AsyncClient() as client:
@@ -195,7 +200,7 @@ class GitHubProvider(GitProvider):
                 timeout=15,
             )
             r.raise_for_status()
-            return [b["name"] for b in r.json()]
+            return [b.get("name", "") for b in r.json() if isinstance(b, dict) and b.get("name")]
 
     async def _fetch_branch_commits(
         self, owner: str, repo: str, branch: str, per_page: int
@@ -224,17 +229,20 @@ class GitHubProvider(GitProvider):
     def _parse_commits(self, data: list[dict]) -> list[CommitInfo]:
         commits = []
         for item in data:
-            c = item["commit"]
-            author = c.get("author") or {}
-            commits.append(CommitInfo(
-                sha=item["sha"],
-                short_sha=item["sha"][:7],
-                message=c.get("message", ""),
-                author=author.get("name", ""),
-                author_email=author.get("email", ""),
-                date=author.get("date", ""),
-                parents=[p["sha"] for p in item.get("parents", [])]
-            ))
+            try:
+                c = item.get("commit") or {}
+                author = c.get("author") or {}
+                commits.append(CommitInfo(
+                    sha=item.get("sha", ""),
+                    short_sha=item.get("sha", "")[:7],
+                    message=c.get("message", ""),
+                    author=author.get("name", ""),
+                    author_email=author.get("email", ""),
+                    date=author.get("date", ""),
+                    parents=[p.get("sha", "") for p in item.get("parents", []) if isinstance(p, dict)]
+                ))
+            except (KeyError, TypeError, AttributeError):
+                continue
         return commits
 
     async def fetch_detail(self, owner: str, repo: str, sha: str) -> CommitDetail:
@@ -256,33 +264,36 @@ class GitHubProvider(GitProvider):
             
             pulls_data = []
             if not isinstance(r_pulls, Exception) and hasattr(r_pulls, 'status_code') and r_pulls.status_code == 200:
-                pulls_data = r_pulls.json()
+                try:
+                    pulls_data = r_pulls.json()
+                except (ValueError, TypeError):
+                    pulls_data = []
 
-            c = full["commit"]
+            c = full.get("commit") or {}
             author = c.get("author") or {}
             files = []
             for f in full.get("files", []):
                 files.append(FileChange(
-                    filename=f["filename"],
-                    status=f["status"],
+                    filename=f.get("filename", ""),
+                    status=f.get("status", "modified"),
                     additions=f.get("additions", 0),
                     deletions=f.get("deletions", 0)
                 ))
 
             return CommitDetail(
                 info=CommitInfo(
-                    sha=full["sha"],
-                    short_sha=full["sha"][:7],
+                    sha=full.get("sha", ""),
+                    short_sha=full.get("sha", "")[:7],
                     message=c.get("message", ""),
                     author=author.get("name", ""),
                     author_email=author.get("email", ""),
                     date=author.get("date", ""),
-                    parents=[p["sha"] for p in full.get("parents", [])]
+                    parents=[p.get("sha", "") for p in full.get("parents", []) if isinstance(p, dict)]
                 ),
                 stats=full.get("stats", {}),
                 files=files,
-                refs=list(dict.fromkeys(re.findall(r"#(\d+)", c["message"]))),
-                linked_prs=[{"number": p["number"], "title": p["title"], "state": p["state"]} for p in pulls_data]
+                refs=list(dict.fromkeys(re.findall(r"#(\d+)", c.get("message", "")))),
+                linked_prs=[{"number": p.get("number", 0), "title": p.get("title", ""), "state": p.get("state", "")} for p in pulls_data if isinstance(p, dict)]
             )
 
 class GitLabProvider(GitProvider):
@@ -301,7 +312,7 @@ class GitLabProvider(GitProvider):
 
     def commit_url(self, owner: str, repo: str, sha: str) -> str:
         base = self.api_url.removesuffix("/api/v4")
-        return f"{base}/{owner}/{repo}/-/commit/{sha}"
+        return f"{base}/{quote(owner, safe='')}/{quote(repo, safe='')}/-/commit/{quote(sha, safe='')}"
 
     async def fetch_repo_info(self, owner: str, repo: str) -> RepoInfo:
         project_id = quote(f"{owner}/{repo}", safe="")
@@ -347,7 +358,7 @@ class GitLabProvider(GitProvider):
                 timeout=15,
             )
             r.raise_for_status()
-            return [b["name"] for b in r.json()]
+            return [b.get("name", "") for b in r.json() if isinstance(b, dict) and b.get("name")]
 
     async def _fetch_branch_commits(
         self, owner: str, repo: str, branch: str, per_page: int
@@ -378,15 +389,18 @@ class GitLabProvider(GitProvider):
     def _parse_commits(self, data: list[dict]) -> list[CommitInfo]:
         commits = []
         for item in data:
-            commits.append(CommitInfo(
-                sha=item["id"],
-                short_sha=item["short_id"],
-                message=item["message"],
-                author=item["author_name"],
-                author_email=item["author_email"],
-                date=item["created_at"],
-                parents=item.get("parent_ids", [])
-            ))
+            try:
+                commits.append(CommitInfo(
+                    sha=item.get("id", ""),
+                    short_sha=item.get("short_id", ""),
+                    message=item.get("message", ""),
+                    author=item.get("author_name", ""),
+                    author_email=item.get("author_email", ""),
+                    date=item.get("created_at", ""),
+                    parents=item.get("parent_ids", [])
+                ))
+            except (KeyError, TypeError, AttributeError):
+                continue
         return commits
 
     async def fetch_detail(self, owner: str, repo: str, sha: str) -> CommitDetail:
@@ -403,25 +417,31 @@ class GitLabProvider(GitProvider):
                 f"{self.api_url}/projects/{project_id}/repository/commits/{sha}/diff",
                 headers=self._headers()
             )
-            diffs = r_diff.json() if r_diff.status_code == 200 else []
-            
+            try:
+                diffs = r_diff.json() if r_diff.status_code == 200 else []
+            except (ValueError, TypeError):
+                diffs = []
+
             r_mrs = await client.get(
                 f"{self.api_url}/projects/{project_id}/repository/commits/{sha}/merge_requests",
                 headers=self._headers()
             )
-            mrs = r_mrs.json() if r_mrs.status_code == 200 else []
+            try:
+                mrs = r_mrs.json() if r_mrs.status_code == 200 else []
+            except (ValueError, TypeError):
+                mrs = []
 
             files = []
             stats = {"additions": 0, "deletions": 0, "total": 0}
             
             for d in diffs:
                 status = "modified"
-                if d["new_file"]: status = "added"
-                elif d["deleted_file"]: status = "removed"
-                elif d["renamed_file"]: status = "renamed"
-                
+                if d.get("new_file", False): status = "added"
+                elif d.get("deleted_file", False): status = "removed"
+                elif d.get("renamed_file", False): status = "renamed"
+
                 files.append(FileChange(
-                    filename=d["new_path"],
+                    filename=d.get("new_path", ""),
                     status=status,
                     additions=0,
                     deletions=0
@@ -429,18 +449,18 @@ class GitLabProvider(GitProvider):
 
             return CommitDetail(
                 info=CommitInfo(
-                    sha=data["id"],
-                    short_sha=data["short_id"],
-                    message=data["message"],
-                    author=data["author_name"],
-                    author_email=data["author_email"],
-                    date=data["created_at"],
+                    sha=data.get("id", ""),
+                    short_sha=data.get("short_id", ""),
+                    message=data.get("message", ""),
+                    author=data.get("author_name", ""),
+                    author_email=data.get("author_email", ""),
+                    date=data.get("created_at", ""),
                     parents=data.get("parent_ids", [])
                 ),
                 stats=data.get("stats", stats),
                 files=files,
                 refs=[],
-                linked_prs=[{"number": m["iid"], "title": m["title"], "state": m["state"]} for m in mrs]
+                linked_prs=[{"number": m.get("iid", 0), "title": m.get("title", ""), "state": m.get("state", "")} for m in mrs if isinstance(m, dict)]
             )
 
 class AzureDevOpsProvider(GitProvider):
@@ -453,7 +473,7 @@ class AzureDevOpsProvider(GitProvider):
         return "Azure DevOps"
 
     def commit_url(self, owner: str, repo: str, sha: str) -> str:
-        return f"https://dev.azure.com/{self.org}/{owner}/_git/{repo}/commit/{sha}"
+        return f"https://dev.azure.com/{quote(self.org, safe='')}/{quote(owner, safe='')}/_git/{quote(repo, safe='')}/commit/{quote(sha, safe='')}"
 
     async def fetch_repo_info(self, owner: str, repo: str) -> RepoInfo:
         base = f"https://dev.azure.com/{self.org}/{owner}/_apis/git/repositories/{repo}"
@@ -496,7 +516,7 @@ class AzureDevOpsProvider(GitProvider):
             )
             r.raise_for_status()
             refs = r.json().get("value", [])
-            return [ref["name"].removeprefix("refs/heads/") for ref in refs]
+            return [ref.get("name", "").removeprefix("refs/heads/") for ref in refs if isinstance(ref, dict) and ref.get("name")]
 
     async def _fetch_branch_commits(
         self, owner: str, repo: str, branch: str, per_page: int
@@ -541,16 +561,19 @@ class AzureDevOpsProvider(GitProvider):
     def _parse_commits(self, data: list[dict]) -> list[CommitInfo]:
         commits = []
         for item in data:
-            author = item.get("author") or {}
-            commits.append(CommitInfo(
-                sha=item["commitId"],
-                short_sha=item["commitId"][:7],
-                message=item.get("comment", ""),
-                author=author.get("name", ""),
-                author_email=author.get("email", ""),
-                date=author.get("date", ""),
-                parents=item.get("parents", [])
-            ))
+            try:
+                author = item.get("author") or {}
+                commits.append(CommitInfo(
+                    sha=item.get("commitId", ""),
+                    short_sha=item.get("commitId", "")[:7],
+                    message=item.get("comment", ""),
+                    author=author.get("name", ""),
+                    author_email=author.get("email", ""),
+                    date=author.get("date", ""),
+                    parents=item.get("parents", [])
+                ))
+            except (KeyError, TypeError, AttributeError):
+                continue
         return commits
 
     async def fetch_detail(self, project: str, repo: str, sha: str) -> CommitDetail:
@@ -562,7 +585,10 @@ class AzureDevOpsProvider(GitProvider):
             c_data = r.json()
             
             r_changes = await client.get(f"{url_base}/changes", auth=self._auth(), params={"api-version": "7.1"})
-            changes_data = r_changes.json() if r_changes.status_code == 200 else {"changes": []}
+            try:
+                changes_data = r_changes.json() if r_changes.status_code == 200 else {"changes": []}
+            except (ValueError, TypeError):
+                changes_data = {"changes": []}
             
             files = []
             stats = {"additions": 0, "deletions": 0, "total": 0}
@@ -586,8 +612,8 @@ class AzureDevOpsProvider(GitProvider):
             author = c_data.get("author") or {}
             return CommitDetail(
                 info=CommitInfo(
-                    sha=c_data["commitId"],
-                    short_sha=c_data["commitId"][:7],
+                    sha=c_data.get("commitId", ""),
+                    short_sha=c_data.get("commitId", "")[:7],
                     message=c_data.get("comment", ""),
                     author=author.get("name", ""),
                     author_email=author.get("email", ""),
@@ -612,7 +638,7 @@ def fmt_date(iso: str) -> str:
         iso = iso.replace("Z", "+00:00")
         dt = datetime.fromisoformat(iso)
         return dt.strftime("%Y-%m-%d %H:%M")
-    except Exception:
+    except (ValueError, TypeError):
         return iso[:16]
 
 # ── Graph Visualizer ──────────────────────────────────────────────────────────
@@ -629,7 +655,61 @@ def _hfill(colors: list[str], i: int) -> str:
     c = _col(colors, i)
     return f"[{c}]───[/{c}]"
 
+def _hconn(colors: list[str], i: int) -> str:
+    """Colored 2-char horizontal connector (──) for after crossing rails."""
+    c = _col(colors, i)
+    return f"[{c}]──[/{c}]"
+
 MAX_COLS = 12  # cap visible rails; beyond this we reuse aggressively
+
+def _topo_sort(commits: list[CommitInfo]) -> list[CommitInfo]:
+    """Sort commits so children always appear before parents (topological order).
+
+    Ties (commits with the same depth) are broken by date descending so the
+    newest commits of equal depth appear first.  Commits whose parents are
+    not in the list are treated as roots.
+    """
+    by_sha = {c.sha: c for c in commits}
+    # How many children *in this list* does each commit have?
+    child_count: dict[str, int] = {c.sha: 0 for c in commits}
+    for c in commits:
+        for p in c.parents:
+            if p in child_count:
+                child_count[p] += 1
+
+    # Seed queue with branch tips (no children in the list).
+    # Heap key: negative date string for newest-first within each wave.
+    import heapq
+    queue = [(_negate_date(c.date), c.sha) for c in commits if child_count[c.sha] == 0]
+    heapq.heapify(queue)
+
+    result: list[CommitInfo] = []
+    while queue:
+        _, sha = heapq.heappop(queue)
+        c = by_sha[sha]
+        result.append(c)
+        for p in c.parents:
+            if p in child_count:
+                child_count[p] -= 1
+                if child_count[p] == 0:
+                    heapq.heappush(queue, (_negate_date(by_sha[p].date), p))
+
+    # If there are commits not reached (cycles or disconnected), append by date
+    if len(result) < len(commits):
+        seen = {c.sha for c in result}
+        for c in commits:
+            if c.sha not in seen:
+                result.append(c)
+
+    return result
+
+def _negate_date(iso: str) -> str:
+    """Return a string that sorts in reverse of the original ISO date.
+
+    ISO date strings sort lexicographically, so we invert each character
+    within the ASCII digit/letter range to reverse the ordering.
+    """
+    return "".join(chr(126 - ord(ch)) if ch.isdigit() else ch for ch in iso)
 
 def _alloc_slot(active: list[Optional[str]], sha: str, prefer_near: int | None = None) -> int:
     """Return index of an existing slot for sha, or allocate the nearest free one.
@@ -679,6 +759,9 @@ def build_graph(
     colors = ["red", "green", "yellow", "blue", "magenta", "cyan",
               "bright_white", "orange3", "deep_sky_blue1", "green3",
               "violet", "gold1"]
+
+    # Topological sort so children always appear before parents
+    commits = _topo_sort(commits)
 
     active: list[Optional[str]] = []
     output: list[tuple[CommitInfo, list[str]]] = []
@@ -769,14 +852,14 @@ def build_graph(
                 in_span = span_lo <= i <= span_hi
 
                 if i == col:
-                    edge_parts.append(_rail(colors, col, "├") + "──")
+                    edge_parts.append(_rail(colors, col, "├") + _hconn(colors, col))
                 elif i in extra_slots:
                     if i > col:
                         edge_parts.append(_rail(colors, i, "╮") + "  ")
                     else:
                         edge_parts.append(_rail(colors, i, "╭") + "  ")
                 elif is_active and in_span:
-                    edge_parts.append(_rail(colors, i, "│") + "──")
+                    edge_parts.append(_rail(colors, i, "│") + _hconn(colors, col))
                 elif in_span:
                     edge_parts.append(_hfill(colors, col))
                 elif is_active:
@@ -798,16 +881,16 @@ def build_graph(
 
                 if i == convergence_target:
                     if col > convergence_target:
-                        edge_parts.append(_rail(colors, convergence_target, "├") + "──")
+                        edge_parts.append(_rail(colors, convergence_target, "├") + _hconn(colors, convergence_target))
                     else:
                         edge_parts.append(_rail(colors, convergence_target, "┤") + "  ")
                 elif i == col:
                     if col > convergence_target:
                         edge_parts.append(_rail(colors, col, "╯") + "  ")
                     else:
-                        edge_parts.append(_rail(colors, col, "╰") + "──")
+                        edge_parts.append(_rail(colors, col, "╰") + _hconn(colors, col))
                 elif is_active and in_span:
-                    edge_parts.append(_rail(colors, i, "│") + "──")
+                    edge_parts.append(_rail(colors, i, "│") + _hconn(colors, col))
                 elif in_span:
                     edge_parts.append(_hfill(colors, col))
                 elif is_active:
@@ -829,16 +912,16 @@ def build_graph(
 
                 if i == col:
                     if col < fork_origin:
-                        edge_parts.append(_rail(colors, col, "├") + "──")
+                        edge_parts.append(_rail(colors, col, "├") + _hconn(colors, col))
                     else:
-                        edge_parts.append(_rail(colors, col, "╰") + "──")
+                        edge_parts.append(_rail(colors, col, "╰") + _hconn(colors, col))
                 elif i == fork_origin:
                     if col < fork_origin:
                         edge_parts.append(_rail(colors, fork_origin, "╮") + "  ")
                     else:
                         edge_parts.append(_rail(colors, fork_origin, "┤") + "  ")
                 elif is_active and in_span:
-                    edge_parts.append(_rail(colors, i, "│") + "──")
+                    edge_parts.append(_rail(colors, i, "│") + _hconn(colors, col))
                 elif in_span:
                     edge_parts.append(_hfill(colors, col))
                 elif is_active:
@@ -901,15 +984,15 @@ def build_graph(
                         sym = "┤"
                     else:
                         sym = "├"
-                    trail = "──" if has_right else "  "
+                    trail = _hconn(colors, col) if has_right else "  "
                     pre_parts.append(_rail(colors, col, sym) + trail)
                 elif i in collapsed_dupes:
                     if i < col:
-                        pre_parts.append(_rail(colors, i, "╰") + "──")
+                        pre_parts.append(_rail(colors, i, "╰") + _hconn(colors, col))
                     else:
                         pre_parts.append(_rail(colors, i, "╯") + "  ")
                 elif is_active and in_span:
-                    pre_parts.append(_rail(colors, i, "│") + "──")
+                    pre_parts.append(_rail(colors, i, "│") + _hconn(colors, col))
                 elif in_span:
                     pre_parts.append(_hfill(colors, col))
                 elif is_active:
@@ -1200,14 +1283,21 @@ class CommitExplorer(App):
     def action_more(self) -> None:
         self._load_more()
 
+    _REPO_RE = re.compile(r"^[\w.\-]+/[\w.\-]+$")
+
     def _trigger_load(self) -> None:
         val = self.query_one("#repo-input", Input).value.strip()
         if "/" not in val:
             self.notify("Format: owner/repo (Azure: project/repo)", severity="warning")
             return
-        
+
         parts = val.split("/", 1)
-        self._owner, self._repo = parts[0], parts[1]
+        owner, repo = parts[0].strip(), parts[1].strip()
+        if not owner or not repo or not self._REPO_RE.match(f"{owner}/{repo}"):
+            self.notify("Invalid owner/repo — use alphanumeric, hyphens, dots only", severity="warning")
+            return
+
+        self._owner, self._repo = owner, repo
         self._page = 1
         self._commits = []
         self._fetch_repo_info()
@@ -1261,8 +1351,8 @@ class CommitExplorer(App):
 
             widget.update("\n".join(lines))
             widget.display = True
-        except Exception:
-            pass  # repo info is non-critical
+        except Exception as e:
+            self.notify(f"Could not load repo info: {e}", severity="warning")
 
     @work
     async def _fetch_commits(self, replace: bool) -> None:
