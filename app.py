@@ -94,6 +94,50 @@ class GitProvider(ABC):
         """Fetch repository metadata and statistics."""
         pass
 
+    @abstractmethod
+    async def fetch_branches(self, owner: str, repo: str, limit: int = 10) -> list[str]:
+        """Fetch branch names, sorted by most recently updated, capped at limit."""
+        pass
+
+    async def fetch_all_commits(
+        self, owner: str, repo: str, count: int = 60
+    ) -> list[CommitInfo]:
+        """Fetch commits from multiple branches, deduplicate, and sort by date descending."""
+        branches = await self.fetch_branches(owner, repo, limit=10)
+        if not branches:
+            # Fallback: just fetch from default branch
+            return await self.fetch_commits(owner, repo, page=1)
+
+        per_branch = max(10, count // len(branches))
+        seen: dict[str, CommitInfo] = {}
+
+        tasks = [
+            self._fetch_branch_commits(owner, repo, branch, per_branch)
+            for branch in branches
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for result in results:
+            if isinstance(result, Exception):
+                continue
+            for commit in result:
+                if commit.sha not in seen:
+                    seen[commit.sha] = commit
+
+        # Sort by date descending (newest first)
+        all_commits = sorted(
+            seen.values(),
+            key=lambda c: c.date,
+            reverse=True,
+        )
+        return all_commits[:count]
+
+    async def _fetch_branch_commits(
+        self, owner: str, repo: str, branch: str, per_page: int
+    ) -> list[CommitInfo]:
+        """Override in subclasses to fetch commits for a specific branch."""
+        return await self.fetch_commits(owner, repo, page=1)
+
     @property
     @abstractmethod
     def name(self) -> str:
@@ -142,6 +186,30 @@ class GitHubProvider(GitProvider):
                 total_commits=total_commits,
             )
 
+    async def fetch_branches(self, owner: str, repo: str, limit: int = 10) -> list[str]:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{self.api_url}/repos/{owner}/{repo}/branches",
+                headers=self._headers(),
+                params={"per_page": limit, "sort": "updated", "direction": "desc"},
+                timeout=15,
+            )
+            r.raise_for_status()
+            return [b["name"] for b in r.json()]
+
+    async def _fetch_branch_commits(
+        self, owner: str, repo: str, branch: str, per_page: int
+    ) -> list[CommitInfo]:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{self.api_url}/repos/{owner}/{repo}/commits",
+                headers=self._headers(),
+                params={"sha": branch, "per_page": per_page},
+                timeout=15,
+            )
+            r.raise_for_status()
+            return self._parse_commits(r.json())
+
     async def fetch_commits(self, owner: str, repo: str, page: int) -> list[CommitInfo]:
         async with httpx.AsyncClient() as client:
             r = await client.get(
@@ -151,22 +219,23 @@ class GitHubProvider(GitProvider):
                 timeout=15,
             )
             r.raise_for_status()
-            data = r.json()
-            
-            commits = []
-            for item in data:
-                c = item["commit"]
-                author = c.get("author") or {}
-                commits.append(CommitInfo(
-                    sha=item["sha"],
-                    short_sha=item["sha"][:7],
-                    message=c.get("message", ""),
-                    author=author.get("name", ""),
-                    author_email=author.get("email", ""),
-                    date=author.get("date", ""),
-                    parents=[p["sha"] for p in item.get("parents", [])]
-                ))
-            return commits
+            return self._parse_commits(r.json())
+
+    def _parse_commits(self, data: list[dict]) -> list[CommitInfo]:
+        commits = []
+        for item in data:
+            c = item["commit"]
+            author = c.get("author") or {}
+            commits.append(CommitInfo(
+                sha=item["sha"],
+                short_sha=item["sha"][:7],
+                message=c.get("message", ""),
+                author=author.get("name", ""),
+                author_email=author.get("email", ""),
+                date=author.get("date", ""),
+                parents=[p["sha"] for p in item.get("parents", [])]
+            ))
+        return commits
 
     async def fetch_detail(self, owner: str, repo: str, sha: str) -> CommitDetail:
         async with httpx.AsyncClient() as client:
@@ -268,6 +337,32 @@ class GitLabProvider(GitProvider):
             h["PRIVATE-TOKEN"] = self.token
         return h
 
+    async def fetch_branches(self, owner: str, repo: str, limit: int = 10) -> list[str]:
+        project_id = quote(f"{owner}/{repo}", safe="")
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{self.api_url}/projects/{project_id}/repository/branches",
+                headers=self._headers(),
+                params={"per_page": limit, "order_by": "updated", "sort": "desc"},
+                timeout=15,
+            )
+            r.raise_for_status()
+            return [b["name"] for b in r.json()]
+
+    async def _fetch_branch_commits(
+        self, owner: str, repo: str, branch: str, per_page: int
+    ) -> list[CommitInfo]:
+        project_id = quote(f"{owner}/{repo}", safe="")
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{self.api_url}/projects/{project_id}/repository/commits",
+                headers=self._headers(),
+                params={"ref_name": branch, "per_page": per_page},
+                timeout=15,
+            )
+            r.raise_for_status()
+            return self._parse_commits(r.json())
+
     async def fetch_commits(self, owner: str, repo: str, page: int) -> list[CommitInfo]:
         project_id = quote(f"{owner}/{repo}", safe="")
         async with httpx.AsyncClient() as client:
@@ -278,20 +373,21 @@ class GitLabProvider(GitProvider):
                 timeout=15
             )
             r.raise_for_status()
-            data = r.json()
-            
-            commits = []
-            for item in data:
-                commits.append(CommitInfo(
-                    sha=item["id"],
-                    short_sha=item["short_id"],
-                    message=item["message"],
-                    author=item["author_name"],
-                    author_email=item["author_email"],
-                    date=item["created_at"],
-                    parents=item.get("parent_ids", [])
-                ))
-            return commits
+            return self._parse_commits(r.json())
+
+    def _parse_commits(self, data: list[dict]) -> list[CommitInfo]:
+        commits = []
+        for item in data:
+            commits.append(CommitInfo(
+                sha=item["id"],
+                short_sha=item["short_id"],
+                message=item["message"],
+                author=item["author_name"],
+                author_email=item["author_email"],
+                date=item["created_at"],
+                parents=item.get("parent_ids", [])
+            ))
+        return commits
 
     async def fetch_detail(self, owner: str, repo: str, sha: str) -> CommitDetail:
         project_id = quote(f"{owner}/{repo}", safe="")
@@ -387,6 +483,41 @@ class AzureDevOpsProvider(GitProvider):
     def _auth(self) -> tuple[str, str]:
         return ("", self.token)
 
+    async def fetch_branches(self, owner: str, repo: str, limit: int = 10) -> list[str]:
+        if not self.org:
+            return []
+        url = f"https://dev.azure.com/{self.org}/{owner}/_apis/git/repositories/{repo}/refs"
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                url,
+                auth=self._auth(),
+                params={"filter": "heads", "api-version": "7.1", "$top": limit},
+                timeout=15,
+            )
+            r.raise_for_status()
+            refs = r.json().get("value", [])
+            return [ref["name"].removeprefix("refs/heads/") for ref in refs]
+
+    async def _fetch_branch_commits(
+        self, owner: str, repo: str, branch: str, per_page: int
+    ) -> list[CommitInfo]:
+        if not self.org:
+            raise ValueError("AZURE_DEVOPS_ORG env var is required")
+        url = f"https://dev.azure.com/{self.org}/{owner}/_apis/git/repositories/{repo}/commits"
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                url,
+                auth=self._auth(),
+                params={
+                    "api-version": "7.1",
+                    "searchCriteria.itemVersion.version": branch,
+                    "$top": per_page,
+                },
+                timeout=15,
+            )
+            r.raise_for_status()
+            return self._parse_commits(r.json().get("value", []))
+
     async def fetch_commits(self, project: str, repo: str, page: int) -> list[CommitInfo]:
         if not self.org:
             raise ValueError("AZURE_DEVOPS_ORG env var is required")
@@ -405,21 +536,22 @@ class AzureDevOpsProvider(GitProvider):
                 timeout=15
             )
             r.raise_for_status()
-            data = r.json()
-            
-            commits = []
-            for item in data["value"]:
-                author = item.get("author") or {}
-                commits.append(CommitInfo(
-                    sha=item["commitId"],
-                    short_sha=item["commitId"][:7],
-                    message=item.get("comment", ""),
-                    author=author.get("name", ""),
-                    author_email=author.get("email", ""),
-                    date=author.get("date", ""),
-                    parents=item.get("parents", [])
-                ))
-            return commits
+            return self._parse_commits(r.json().get("value", []))
+
+    def _parse_commits(self, data: list[dict]) -> list[CommitInfo]:
+        commits = []
+        for item in data:
+            author = item.get("author") or {}
+            commits.append(CommitInfo(
+                sha=item["commitId"],
+                short_sha=item["commitId"][:7],
+                message=item.get("comment", ""),
+                author=author.get("name", ""),
+                author_email=author.get("email", ""),
+                date=author.get("date", ""),
+                parents=item.get("parents", [])
+            ))
+        return commits
 
     async def fetch_detail(self, project: str, repo: str, sha: str) -> CommitDetail:
         url_base = f"https://dev.azure.com/{self.org}/{project}/_apis/git/repositories/{repo}/commits/{sha}"
@@ -492,22 +624,33 @@ def _rail(colors: list[str], i: int, sym: str) -> str:
     c = _col(colors, i)
     return f"[{c}]{sym}[/{c}]"
 
+def _hfill(colors: list[str], i: int) -> str:
+    """Colored horizontal fill segment (───) for edge-line spans."""
+    c = _col(colors, i)
+    return f"[{c}]───[/{c}]"
+
 MAX_COLS = 12  # cap visible rails; beyond this we reuse aggressively
 
-def _alloc_slot(active: list[Optional[str]], sha: str) -> int:
-    """Return index of an existing slot for sha, or allocate the nearest free one."""
+def _alloc_slot(active: list[Optional[str]], sha: str, prefer_near: int | None = None) -> int:
+    """Return index of an existing slot for sha, or allocate the nearest free one.
+
+    When prefer_near is given, pick the free slot closest to that column
+    so merge/fork edges stay compact.
+    """
     # Already tracked?
     try:
         return active.index(sha)
     except ValueError:
         pass
-    # First free slot
-    try:
-        idx = active.index(None)
+    # Find a free slot — prefer one near `prefer_near` if given
+    free = [i for i, v in enumerate(active) if v is None]
+    if free:
+        if prefer_near is not None:
+            idx = min(free, key=lambda i: abs(i - prefer_near))
+        else:
+            idx = free[0]
         active[idx] = sha
         return idx
-    except ValueError:
-        pass
     # At cap? Reuse the rightmost slot (oldest rail) — rough heuristic
     if len(active) >= MAX_COLS:
         active[-1] = sha
@@ -523,10 +666,15 @@ def build_graph(
     Returns (CommitInfo, graph_lines) where graph_lines is a list of
     Rich-markup strings to stack vertically — like `git log --graph`.
 
-    Each commit produces:
-      1. Node line:         ● │ │
-      2. Edge line (merge): ├─╮ │   (only for merge commits)
-      3. Continuation line: │ │ │   (connects to the next commit)
+    Each commit produces up to 3 lines:
+      1. Node line:          ● │ │      (bold dot at commit's column)
+      2. Edge line:          ├─╮ │      (merge, fork, or convergence)
+      3. Continuation line:  │ │ │      (connects to the next commit)
+
+    Handles:
+      - Merge commits:  multiple parents → ├─╮ fork to extra rails
+      - Branch close:   single parent already on another rail → ╰──┤ converge
+      - Branch fork:    commit appears on a NEW rail (wasn't expected) → ╭──┤ showing origin
     """
     colors = ["red", "green", "yellow", "blue", "magenta", "cyan",
               "bright_white", "orange3", "deep_sky_blue1", "green3",
@@ -539,6 +687,7 @@ def build_graph(
         sha = commit.sha
 
         # ── Assign / find column ─────────────────────────────────────────
+        was_expected = sha in active
         try:
             col = active.index(sha)
         except ValueError:
@@ -546,8 +695,10 @@ def build_graph(
             active[col] = sha
 
         # Collapse duplicate refs (two rails converge here)
+        collapsed_dupes: list[int] = []
         for i in range(len(active)):
             if i != col and active[i] == sha:
+                collapsed_dupes.append(i)
                 active[i] = None
 
         n_before = len(active)
@@ -557,15 +708,39 @@ def build_graph(
         for i in range(n_before):
             if i == col:
                 c = _col(colors, i)
-                node_parts.append(f"[bold {c}]●[/bold {c}] ")
+                node_parts.append(f"[bold {c}]●[/bold {c}]  ")
             elif active[i] is not None:
-                node_parts.append(_rail(colors, i, "│") + " ")
+                node_parts.append(_rail(colors, i, "│") + "  ")
             else:
-                node_parts.append("  ")
+                node_parts.append("   ")
         node_line = "".join(node_parts).rstrip()
 
         # ── Wire parents ─────────────────────────────────────────────────
         parents = commit.parents
+
+        # Detect branch-close: single parent already tracked on a different rail
+        convergence_target = None
+        if len(parents) == 1:
+            try:
+                existing = active.index(parents[0])
+                if existing != col:
+                    convergence_target = existing
+            except ValueError:
+                pass
+
+        # Detect branch-fork: this commit was NOT expected on any rail,
+        # meaning it's the tip of a new branch. Its first parent shows
+        # which rail it forked from (if that parent is already tracked).
+        fork_origin = None
+        if not was_expected and len(parents) >= 1:
+            # Check if first parent is already tracked on a different rail
+            try:
+                p0_slot = active.index(parents[0])
+                if p0_slot != col:
+                    fork_origin = p0_slot
+            except ValueError:
+                pass
+
         active[col] = None
 
         parent_slots: list[int] = []
@@ -573,19 +748,20 @@ def build_graph(
             active[col] = parents[0]
             parent_slots.append(col)
             for p in parents[1:]:
-                slot = _alloc_slot(active, p)
+                slot = _alloc_slot(active, p, prefer_near=col)
                 parent_slots.append(slot)
 
         while active and active[-1] is None:
             active.pop()
 
-        # ── Edge line (merge commits only) ───────────────────────────────
+        # ── Edge line (merge, convergence, or fork) ──────────────────────
         edge_line = ""
         if len(parents) > 1:
+            # Merge commit: draw lines to all extra parent rails
             extra_slots = sorted(set(parent_slots[1:]))
             span_lo = min(col, *extra_slots)
             span_hi = max(col, *extra_slots)
-            width = max(n_before, len(active), span_hi + 1)
+            width = max(span_hi + 1, len(active))
 
             edge_parts: list[str] = []
             for i in range(width):
@@ -593,35 +769,159 @@ def build_graph(
                 in_span = span_lo <= i <= span_hi
 
                 if i == col:
-                    edge_parts.append(_rail(colors, col, "├") + "─")
+                    edge_parts.append(_rail(colors, col, "├") + "──")
                 elif i in extra_slots:
                     if i > col:
-                        edge_parts.append(_rail(colors, i, "╮") + " ")
+                        edge_parts.append(_rail(colors, i, "╮") + "  ")
                     else:
-                        edge_parts.append(_rail(colors, i, "╭") + " ")
+                        edge_parts.append(_rail(colors, i, "╭") + "  ")
                 elif is_active and in_span:
-                    edge_parts.append(_rail(colors, i, "┼") + "─")
+                    edge_parts.append(_rail(colors, i, "│") + "──")
                 elif in_span:
-                    edge_parts.append("──")
+                    edge_parts.append(_hfill(colors, col))
                 elif is_active:
-                    edge_parts.append(_rail(colors, i, "│") + " ")
+                    edge_parts.append(_rail(colors, i, "│") + "  ")
                 else:
-                    edge_parts.append("  ")
+                    edge_parts.append("   ")
             edge_line = "".join(edge_parts).rstrip()
 
-        # ── Continuation line ────────────────────────────────────────────
+        elif convergence_target is not None:
+            # Branch close: this commit's rail converges into an existing rail
+            span_lo = min(col, convergence_target)
+            span_hi = max(col, convergence_target)
+            width = max(span_hi + 1, len(active))
+
+            edge_parts = []
+            for i in range(width):
+                is_active = i < len(active) and active[i] is not None
+                in_span = span_lo <= i <= span_hi
+
+                if i == convergence_target:
+                    if col > convergence_target:
+                        edge_parts.append(_rail(colors, convergence_target, "├") + "──")
+                    else:
+                        edge_parts.append(_rail(colors, convergence_target, "┤") + "  ")
+                elif i == col:
+                    if col > convergence_target:
+                        edge_parts.append(_rail(colors, col, "╯") + "  ")
+                    else:
+                        edge_parts.append(_rail(colors, col, "╰") + "──")
+                elif is_active and in_span:
+                    edge_parts.append(_rail(colors, i, "│") + "──")
+                elif in_span:
+                    edge_parts.append(_hfill(colors, col))
+                elif is_active:
+                    edge_parts.append(_rail(colors, i, "│") + "  ")
+                else:
+                    edge_parts.append("   ")
+            edge_line = "".join(edge_parts).rstrip()
+
+        elif fork_origin is not None:
+            # Branch fork: new branch appeared, show where it came from
+            span_lo = min(col, fork_origin)
+            span_hi = max(col, fork_origin)
+            width = max(span_hi + 1, len(active))
+
+            edge_parts = []
+            for i in range(width):
+                is_active = i < len(active) and active[i] is not None
+                in_span = span_lo <= i <= span_hi
+
+                if i == col:
+                    if col < fork_origin:
+                        edge_parts.append(_rail(colors, col, "├") + "──")
+                    else:
+                        edge_parts.append(_rail(colors, col, "╰") + "──")
+                elif i == fork_origin:
+                    if col < fork_origin:
+                        edge_parts.append(_rail(colors, fork_origin, "╮") + "  ")
+                    else:
+                        edge_parts.append(_rail(colors, fork_origin, "┤") + "  ")
+                elif is_active and in_span:
+                    edge_parts.append(_rail(colors, i, "│") + "──")
+                elif in_span:
+                    edge_parts.append(_hfill(colors, col))
+                elif is_active:
+                    edge_parts.append(_rail(colors, i, "│") + "  ")
+                else:
+                    edge_parts.append("   ")
+            edge_line = "".join(edge_parts).rstrip()
+
+        # ── Continuation line (always drawn if any rail is active) ───────
+        # Only draw continuation for currently active rails
         cont_parts: list[str] = []
         for i in range(len(active)):
             if active[i] is not None:
-                cont_parts.append(_rail(colors, i, "│") + " ")
+                cont_parts.append(_rail(colors, i, "│") + "  ")
             else:
-                cont_parts.append("  ")
+                cont_parts.append("   ")
         cont_line = "".join(cont_parts).rstrip()
 
         # ── Combine ──────────────────────────────────────────────────────
-        lines = [node_line]
+        lines: list[str] = []
+
+        # New branch tip: commit wasn't expected on any rail and no fork
+        # origin was found. Draw a branch-entry marker so the dot
+        # doesn't float disconnected.
+        is_new_branch = (not was_expected and fork_origin is None
+                         and not collapsed_dupes)
+        if is_new_branch and n_before > 0:
+            n_active = len(active)
+            width = max(n_before, n_active)
+            entry_parts: list[str] = []
+            for i in range(width):
+                if i == col:
+                    entry_parts.append(_rail(colors, col, "╷") + "  ")
+                elif i < n_active and active[i] is not None:
+                    entry_parts.append(_rail(colors, i, "│") + "  ")
+                else:
+                    entry_parts.append("   ")
+            lines.append("".join(entry_parts).rstrip())
+
+        # If duplicate rails were collapsed, draw a convergence pre-line
+        # so the rails don't just vanish without visual explanation.
+        if collapsed_dupes:
+            all_pos = collapsed_dupes + [col]
+            span_lo = min(all_pos)
+            span_hi = max(all_pos)
+            n_active = len(active)
+            width = max(span_hi + 1, n_active)
+            has_left = any(p < col for p in collapsed_dupes)
+            has_right = any(p > col for p in collapsed_dupes)
+
+            pre_parts: list[str] = []
+            for i in range(width):
+                in_span = span_lo <= i <= span_hi
+                is_active = i < n_active and active[i] is not None
+
+                if i == col:
+                    if has_left and has_right:
+                        sym = "┼"
+                    elif has_left:
+                        sym = "┤"
+                    else:
+                        sym = "├"
+                    trail = "──" if has_right else "  "
+                    pre_parts.append(_rail(colors, col, sym) + trail)
+                elif i in collapsed_dupes:
+                    if i < col:
+                        pre_parts.append(_rail(colors, i, "╰") + "──")
+                    else:
+                        pre_parts.append(_rail(colors, i, "╯") + "  ")
+                elif is_active and in_span:
+                    pre_parts.append(_rail(colors, i, "│") + "──")
+                elif in_span:
+                    pre_parts.append(_hfill(colors, col))
+                elif is_active:
+                    pre_parts.append(_rail(colors, i, "│") + "  ")
+                else:
+                    pre_parts.append("   ")
+            lines.append("".join(pre_parts).rstrip())
+
+        lines.append(node_line)
         if edge_line:
             lines.append(edge_line)
+        # Always append continuation if there are active rails, for visual continuity
         if cont_line.strip():
             lines.append(cont_line)
 
@@ -630,6 +930,54 @@ def build_graph(
     return output
 
 # ── UI Components ─────────────────────────────────────────────────────────────
+
+class GraphSplitter(Widget):
+    """Horizontal drag bar at the bottom of the left panel to resize the graph column."""
+
+    DEFAULT_CSS = """
+    GraphSplitter {
+        height: 1;
+        background: $primary-darken-2;
+        color: $text-muted;
+        content-align: center middle;
+    }
+    GraphSplitter:hover {
+        background: $accent;
+        color: $text;
+    }
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._dragging = False
+        self._drag_start_x = 0
+        self._drag_start_width = 8
+
+    def render(self) -> str:
+        w = getattr(self.app, "_graph_col_width", 8)
+        return f"◁  graph: {w}  ▷"
+
+    def on_mouse_down(self, event) -> None:
+        self._dragging = True
+        self._drag_start_x = event.screen_x
+        self._drag_start_width = getattr(self.app, "_graph_col_width", 8)
+        self.capture_mouse()
+        event.stop()
+
+    def on_mouse_up(self, event) -> None:
+        if self._dragging:
+            self._dragging = False
+            self.release_mouse()
+            event.stop()
+
+    def on_mouse_move(self, event) -> None:
+        if self._dragging:
+            delta = event.screen_x - self._drag_start_x
+            new_width = max(4, min(60, self._drag_start_width + delta))
+            self.app._set_graph_col_width(new_width)
+            self.refresh()
+            event.stop()
+
 
 class Splitter(Widget):
     """Draggable vertical splitter between two panels."""
@@ -680,11 +1028,13 @@ class CommitItem(ListItem):
         self.commit = commit
         self.graph_lines = graph_lines
 
+    def on_mount(self) -> None:
+        w = getattr(self.app, "_graph_col_width", 8)
+        self.query_one(".graph-col").styles.width = w
+
     def compose(self) -> ComposeResult:
         sha = self.commit.short_sha
         msg_text = self.commit.message.split("\n")[0].strip()
-        if len(msg_text) > 60:
-            msg_text = msg_text[:59] + "…"
         msg  = escape(msg_text)
         who  = escape(self.commit.author)
         date = fmt_date(self.commit.date)[:10]
@@ -738,7 +1088,7 @@ class CommitExplorer(App):
     CommitItem        { padding: 0 0; height: auto; }
     CommitItem:hover  { background: $boost; }
     .commit-row       { height: auto; }
-    .graph-col        { width: auto; min-width: 4; padding: 0 1 0 1; }
+    .graph-col        { width: 8; min-width: 4; padding: 0 1 0 1; overflow-x: hidden; }
     .info-col         { width: 1fr; padding: 0 1; }
 
     #right        { width: 1fr; }
@@ -760,7 +1110,8 @@ class CommitExplorer(App):
         self._page = 1
         self._commits: list[CommitInfo] = []
         self._current_sha: str = ""
-        
+        self._graph_col_width: int = 8
+
         self.providers = {
             "github": GitHubProvider(),
             "gitlab": GitLabProvider(),
@@ -789,12 +1140,18 @@ class CommitExplorer(App):
                 yield LoadingIndicator(id="spinner")
                 yield ListView(id="commits-list")
                 yield Button("Load more  ↓", id="more-btn")
+                yield GraphSplitter()
             yield Splitter()
             with Vertical(id="right"):
                 yield Button("⎋  Open in browser", id="open-btn", variant="default", disabled=True)
                 with ScrollableContainer(id="right-scroll"):
                     yield Static("[dim]Select a commit to see details.[/dim]", id="detail")
         yield Footer()
+
+    def _set_graph_col_width(self, width: int) -> None:
+        self._graph_col_width = width
+        for col in self.query(".graph-col"):
+            col.styles.width = width
 
     def on_mount(self) -> None:
         self.query_one("#spinner").display = False
@@ -913,28 +1270,32 @@ class CommitExplorer(App):
         spinner.display = True
         
         try:
-            new_commits = await self.current_provider.fetch_commits(
-                self._owner, self._repo, self._page
-            )
-            
             if replace:
+                # First load: fetch from all branches for a proper multi-branch graph
+                new_commits = await self.current_provider.fetch_all_commits(
+                    self._owner, self._repo, count=60
+                )
                 self._commits = new_commits
             else:
-                self._commits.extend(new_commits)
+                # "Load more": append additional commits from default branch
+                new_commits = await self.current_provider.fetch_commits(
+                    self._owner, self._repo, self._page
+                )
+                if not new_commits:
+                    self.notify("No more commits.", severity="information")
+                    return
+                # Deduplicate against existing commits
+                seen = {c.sha for c in self._commits}
+                for c in new_commits:
+                    if c.sha not in seen:
+                        self._commits.append(c)
+                        seen.add(c.sha)
             
             lv = self.query_one("#commits-list", ListView)
-            if replace:
-                await lv.clear()
-            
-            if not new_commits and not replace:
-                self.notify("No more commits.", severity="information")
-                return
-            
-            # Simple graph recalc for new items for now
-            # Note: ideally we recalculate whole graph for consistency but that might jump
-            # We'll just graph the new batch independently which is a bit glitchy at page boundary
-            # but safer for simple logic
-            graph_data = build_graph(new_commits)
+            await lv.clear()
+
+            # Rebuild full graph from all accumulated commits for consistency
+            graph_data = build_graph(self._commits)
 
             for commit, graph_lines in graph_data:
                 await lv.append(CommitItem(commit, graph_lines))
