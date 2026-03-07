@@ -1,4 +1,4 @@
-# Git Explorer
+# Commit Explorer
 
 A terminal UI for exploring git repository history across GitHub, GitLab, and Azure DevOps.
 

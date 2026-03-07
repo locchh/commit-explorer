@@ -44,7 +44,7 @@ The entire application lives in a single file: `app.py`.
 
 | Class / function | Role |
 |---|---|
-| `GitExplorer(App)` | Main Textual app; holds `_page`, `_owner`, `_repo`, `_current_sha` |
+| `CommitExplorer(App)` | Main Textual app; holds `_page`, `_owner`, `_repo`, `_current_sha` |
 | `CommitItem(ListItem)` | Renders one commit row: colored graph column + bold message + sha/date/author |
 | `Splitter(Widget)` | Draggable 1-char-wide divider; adjusts `#left` width via mouse capture |
 | `build_graph(commits)` | Pure function → `list[(CommitInfo, list[str])]`; produces Rich-markup graph lines (node + optional edge + continuation) |

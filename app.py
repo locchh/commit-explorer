@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Git Explorer — Interactive TUI for exploring git repository history."""
+"""Commit Explorer — Interactive TUI for exploring git repository history."""
 
 import asyncio
 import os
@@ -7,7 +7,7 @@ import re
 import sys
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, NamedTuple, Optional
+from typing import NamedTuple, Optional
 from urllib.parse import quote
 
 import webbrowser
@@ -603,8 +603,8 @@ class CommitItem(ListItem):
             yield Label(graph_cell, classes="graph-col")
             yield Label(info_cell,  classes="info-col")
 
-class GitExplorer(App):
-    TITLE = "Git Explorer"
+class CommitExplorer(App):
+    TITLE = "Commit Explorer"
     CSS = """
     #toolbar {
         height: 3;
@@ -850,4 +850,4 @@ class GitExplorer(App):
 
 if __name__ == "__main__":
     repo = sys.argv[1] if len(sys.argv) > 1 else ""
-    GitExplorer(initial_repo=repo).run()
+    CommitExplorer(initial_repo=repo).run()
