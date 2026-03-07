@@ -846,18 +846,28 @@ def build_graph(
             span_hi = max(col, *extra_slots)
             width = max(span_hi + 1, len(active))
 
+            has_left  = any(s < col for s in extra_slots)
+            has_right = any(s > col for s in extra_slots)
+
             edge_parts: list[str] = []
             for i in range(width):
                 is_active = i < len(active) and active[i] is not None
                 in_span = span_lo <= i <= span_hi
 
                 if i == col:
-                    edge_parts.append(_rail(colors, col, "├") + _hconn(colors, col))
+                    if has_left and has_right:
+                        sym = "┼"
+                    elif has_left:
+                        sym = "┤"
+                    else:
+                        sym = "├"
+                    trail = _hconn(colors, col) if has_right else "  "
+                    edge_parts.append(_rail(colors, col, sym) + trail)
                 elif i in extra_slots:
                     if i > col:
                         edge_parts.append(_rail(colors, i, "╮") + "  ")
                     else:
-                        edge_parts.append(_rail(colors, i, "╭") + "  ")
+                        edge_parts.append(_rail(colors, i, "╭") + _hconn(colors, col))
                 elif is_active and in_span:
                     edge_parts.append(_rail(colors, i, "│") + _hconn(colors, col))
                 elif in_span:
@@ -992,7 +1002,7 @@ def build_graph(
                     else:
                         pre_parts.append(_rail(colors, i, "╯") + "  ")
                 elif is_active and in_span:
-                    pre_parts.append(_rail(colors, i, "│") + _hconn(colors, col))
+                    pre_parts.append(_rail(colors, i, "┼") + _hconn(colors, col))
                 elif in_span:
                     pre_parts.append(_hfill(colors, col))
                 elif is_active:
