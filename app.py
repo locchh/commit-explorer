@@ -60,6 +60,17 @@ class CommitDetail(NamedTuple):
     refs: list[str]  # issue refs
     linked_prs: list[dict] # simplified PR info
 
+class RepoInfo(NamedTuple):
+    description: str
+    created_at: str
+    default_branch: str
+    language: str
+    stars: int
+    forks: int
+    open_issues: int
+    branches: Optional[int]
+    total_commits: Optional[int]
+
 # ── Providers ─────────────────────────────────────────────────────────────────
 
 class GitProvider(ABC):
@@ -76,6 +87,11 @@ class GitProvider(ABC):
     @abstractmethod
     def commit_url(self, owner: str, repo: str, sha: str) -> str:
         """Return a browser URL for the given commit."""
+        pass
+
+    @abstractmethod
+    async def fetch_repo_info(self, owner: str, repo: str) -> RepoInfo:
+        """Fetch repository metadata and statistics."""
         pass
 
     @property
@@ -100,6 +116,31 @@ class GitHubProvider(GitProvider):
 
     def commit_url(self, owner: str, repo: str, sha: str) -> str:
         return f"https://github.com/{owner}/{repo}/commit/{sha}"
+
+    async def fetch_repo_info(self, owner: str, repo: str) -> RepoInfo:
+        async with httpx.AsyncClient() as client:
+            r_repo, r_branches, r_commits = await asyncio.gather(
+                client.get(f"{self.api_url}/repos/{owner}/{repo}", headers=self._headers()),
+                client.get(f"{self.api_url}/repos/{owner}/{repo}/branches",
+                           headers=self._headers(), params={"per_page": 1}),
+                client.get(f"{self.api_url}/repos/{owner}/{repo}/commits",
+                           headers=self._headers(), params={"per_page": 1}),
+            )
+            r_repo.raise_for_status()
+            d = r_repo.json()
+            branches = _last_page(r_branches.headers.get("link", ""))
+            total_commits = _last_page(r_commits.headers.get("link", ""))
+            return RepoInfo(
+                description=d.get("description") or "",
+                created_at=d.get("created_at", ""),
+                default_branch=d.get("default_branch", ""),
+                language=d.get("language") or "",
+                stars=d.get("stargazers_count", 0),
+                forks=d.get("forks_count", 0),
+                open_issues=d.get("open_issues_count", 0),
+                branches=branches,
+                total_commits=total_commits,
+            )
 
     async def fetch_commits(self, owner: str, repo: str, page: int) -> list[CommitInfo]:
         async with httpx.AsyncClient() as client:
@@ -190,6 +231,34 @@ class GitLabProvider(GitProvider):
     def commit_url(self, owner: str, repo: str, sha: str) -> str:
         base = self.api_url.removesuffix("/api/v4")
         return f"{base}/{owner}/{repo}/-/commit/{sha}"
+
+    async def fetch_repo_info(self, owner: str, repo: str) -> RepoInfo:
+        project_id = quote(f"{owner}/{repo}", safe="")
+        async with httpx.AsyncClient() as client:
+            r_repo, r_branches = await asyncio.gather(
+                client.get(f"{self.api_url}/projects/{project_id}", headers=self._headers()),
+                client.get(f"{self.api_url}/projects/{project_id}/repository/branches",
+                           headers=self._headers(), params={"per_page": 1}),
+            )
+            r_repo.raise_for_status()
+            d = r_repo.json()
+            branches_total = None
+            if r_branches.status_code == 200:
+                try:
+                    branches_total = int(r_branches.headers.get("x-total", 0)) or None
+                except ValueError:
+                    pass
+            return RepoInfo(
+                description=d.get("description") or "",
+                created_at=d.get("created_at", ""),
+                default_branch=d.get("default_branch", ""),
+                language="",
+                stars=d.get("star_count", 0),
+                forks=d.get("forks_count", 0),
+                open_issues=d.get("open_issues_count", 0),
+                branches=branches_total,
+                total_commits=None,
+            )
 
     def _headers(self) -> dict:
         h = {}
@@ -288,6 +357,31 @@ class AzureDevOpsProvider(GitProvider):
     def commit_url(self, owner: str, repo: str, sha: str) -> str:
         return f"https://dev.azure.com/{self.org}/{owner}/_git/{repo}/commit/{sha}"
 
+    async def fetch_repo_info(self, owner: str, repo: str) -> RepoInfo:
+        base = f"https://dev.azure.com/{self.org}/{owner}/_apis/git/repositories/{repo}"
+        async with httpx.AsyncClient() as client:
+            r_repo, r_branches = await asyncio.gather(
+                client.get(base, auth=self._auth(), params={"api-version": "7.1"}),
+                client.get(f"https://dev.azure.com/{self.org}/{owner}/_apis/git/repositories/{repo}/refs",
+                           auth=self._auth(), params={"filter": "heads", "api-version": "7.1", "$top": 1000}),
+            )
+            r_repo.raise_for_status()
+            d = r_repo.json()
+            branches = None
+            if r_branches.status_code == 200:
+                branches = r_branches.json().get("count")
+            return RepoInfo(
+                description=d.get("remoteUrl", ""),
+                created_at="",
+                default_branch=d.get("defaultBranch", "").removeprefix("refs/heads/"),
+                language="",
+                stars=0,
+                forks=0,
+                open_issues=0,
+                branches=branches,
+                total_commits=None,
+            )
+
     def _auth(self) -> tuple[str, str]:
         return ("", self.token)
 
@@ -371,6 +465,11 @@ class AzureDevOpsProvider(GitProvider):
             )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _last_page(link_header: str) -> Optional[int]:
+    """Parse the last page number from a GitHub/GitLab Link header."""
+    m = re.search(r'[?&]page=(\d+)[^>]*>;\s*rel="last"', link_header or "")
+    return int(m.group(1)) if m else None
 
 def fmt_date(iso: str) -> str:
     try:
@@ -621,6 +720,13 @@ class CommitExplorer(App):
     #left {
         width: 50%;
     }
+    #repo-info {
+        height: auto;
+        padding: 1 2;
+        background: $panel;
+        border-bottom: solid $primary-darken-2;
+        display: none;
+    }
     #spinner     { height: 3; display: none; }
     #commits-list { height: 1fr; }
     #more-btn    { height: 3; dock: bottom; }
@@ -675,6 +781,7 @@ class CommitExplorer(App):
         
         with Horizontal(id="main"):
             with Vertical(id="left"):
+                yield Static("", id="repo-info")
                 yield LoadingIndicator(id="spinner")
                 yield ListView(id="commits-list")
                 yield Button("Load more  ↓", id="more-btn")
@@ -695,6 +802,7 @@ class CommitExplorer(App):
     def on_provider_changed(self, event: Select.Changed) -> None:
         self.current_provider = self.providers[str(event.value)]
         self.query_one("#commits-list", ListView).clear()
+        self.query_one("#repo-info", Static).display = False
         self._commits = []
         self._page = 1
 
@@ -725,6 +833,7 @@ class CommitExplorer(App):
         if self._owner:
             self._page = 1
             self._commits = []
+            self._fetch_repo_info()
             self._fetch_commits(replace=True)
 
     def action_more(self) -> None:
@@ -740,12 +849,59 @@ class CommitExplorer(App):
         self._owner, self._repo = parts[0], parts[1]
         self._page = 1
         self._commits = []
+        self._fetch_repo_info()
         self._fetch_commits(replace=True)
 
     def _load_more(self) -> None:
         if self._owner:
             self._page += 1
             self._fetch_commits(replace=False)
+
+    @work
+    async def _fetch_repo_info(self) -> None:
+        widget = self.query_one("#repo-info", Static)
+        widget.display = False
+        try:
+            info = await self.current_provider.fetch_repo_info(self._owner, self._repo)
+
+            lines: list[str] = []
+
+            # Title + description
+            title = f"[bold]{escape(self._owner)}/[white]{escape(self._repo)}[/white][/bold]"
+            if info.description:
+                title += f"  [dim]{escape(info.description[:80])}[/dim]"
+            lines.append(title)
+
+            # Stats row
+            stats: list[str] = []
+            if info.stars:
+                stats.append(f"[yellow]★ {info.stars:,}[/yellow]")
+            if info.forks:
+                stats.append(f"[cyan]⑂ {info.forks:,}[/cyan]")
+            if info.language:
+                stats.append(f"[green]{escape(info.language)}[/green]")
+            if info.default_branch:
+                stats.append(f"default: [magenta]{escape(info.default_branch)}[/magenta]")
+            if info.open_issues:
+                stats.append(f"[red]{info.open_issues:,} issues[/red]")
+            if stats:
+                lines.append("  ".join(stats))
+
+            # Timeline row
+            meta: list[str] = []
+            if info.created_at:
+                meta.append(f"Created {fmt_date(info.created_at)[:10]}")
+            if info.branches is not None:
+                meta.append(f"{info.branches:,} branches")
+            if info.total_commits is not None:
+                meta.append(f"~{info.total_commits:,} commits")
+            if meta:
+                lines.append("[dim]" + "  ·  ".join(meta) + "[/dim]")
+
+            widget.update("\n".join(lines))
+            widget.display = True
+        except Exception:
+            pass  # repo info is non-critical
 
     @work
     async def _fetch_commits(self, replace: bool) -> None:
