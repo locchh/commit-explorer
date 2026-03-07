@@ -156,13 +156,14 @@ class GitHubProvider(GitProvider):
             commits = []
             for item in data:
                 c = item["commit"]
+                author = c.get("author") or {}
                 commits.append(CommitInfo(
                     sha=item["sha"],
                     short_sha=item["sha"][:7],
-                    message=c["message"],
-                    author=c["author"]["name"],
-                    author_email=c["author"]["email"],
-                    date=c["author"]["date"],
+                    message=c.get("message", ""),
+                    author=author.get("name", ""),
+                    author_email=author.get("email", ""),
+                    date=author.get("date", ""),
                     parents=[p["sha"] for p in item.get("parents", [])]
                 ))
             return commits
@@ -189,6 +190,7 @@ class GitHubProvider(GitProvider):
                 pulls_data = r_pulls.json()
 
             c = full["commit"]
+            author = c.get("author") or {}
             files = []
             for f in full.get("files", []):
                 files.append(FileChange(
@@ -202,10 +204,10 @@ class GitHubProvider(GitProvider):
                 info=CommitInfo(
                     sha=full["sha"],
                     short_sha=full["sha"][:7],
-                    message=c["message"],
-                    author=c["author"]["name"],
-                    author_email=c["author"]["email"],
-                    date=c["author"]["date"],
+                    message=c.get("message", ""),
+                    author=author.get("name", ""),
+                    author_email=author.get("email", ""),
+                    date=author.get("date", ""),
                     parents=[p["sha"] for p in full.get("parents", [])]
                 ),
                 stats=full.get("stats", {}),
@@ -407,13 +409,14 @@ class AzureDevOpsProvider(GitProvider):
             
             commits = []
             for item in data["value"]:
+                author = item.get("author") or {}
                 commits.append(CommitInfo(
                     sha=item["commitId"],
                     short_sha=item["commitId"][:7],
                     message=item.get("comment", ""),
-                    author=item["author"]["name"],
-                    author_email=item["author"]["email"],
-                    date=item["author"]["date"],
+                    author=author.get("name", ""),
+                    author_email=author.get("email", ""),
+                    date=author.get("date", ""),
                     parents=item.get("parents", [])
                 ))
             return commits
@@ -448,14 +451,15 @@ class AzureDevOpsProvider(GitProvider):
                     deletions=0
                 ))
                 
+            author = c_data.get("author") or {}
             return CommitDetail(
                 info=CommitInfo(
                     sha=c_data["commitId"],
                     short_sha=c_data["commitId"][:7],
                     message=c_data.get("comment", ""),
-                    author=c_data["author"]["name"],
-                    author_email=c_data["author"]["email"],
-                    date=c_data["author"]["date"],
+                    author=author.get("name", ""),
+                    author_email=author.get("email", ""),
+                    date=author.get("date", ""),
                     parents=c_data.get("parents", [])
                 ),
                 stats=stats,
@@ -476,7 +480,7 @@ def fmt_date(iso: str) -> str:
         iso = iso.replace("Z", "+00:00")
         dt = datetime.fromisoformat(iso)
         return dt.strftime("%Y-%m-%d %H:%M")
-    except:
+    except Exception:
         return iso[:16]
 
 # ── Graph Visualizer ──────────────────────────────────────────────────────────
