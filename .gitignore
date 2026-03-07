@@ -182,4 +182,4 @@ ehthumbs.db
 Thumbs.db
 
 # UV lock file (keep this commented if you want to version control it)
-# uv.lock
+uv.lock
