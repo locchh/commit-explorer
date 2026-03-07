@@ -16,6 +16,19 @@ A terminal UI for exploring git repository history across GitHub, GitLab, and Az
 └────────────────────────────┴──┴────────────────────────┘
 ```
 
+## Quick Start
+The app can be run directly from GitHub with this command:
+
+```bash
+uvx --from git+https://github.com/locchh/commit-explorer commit-explorer
+```
+
+Or with a specific repository pre-loaded:
+
+```bash
+uvx --from git+https://github.com/locchh/commit-explorer commit-explorer textualize/textual
+```
+
 ## Setup
 
 Requires Python 3.12+ and [uv](https://github.com/astral-sh/uv).
@@ -29,8 +42,8 @@ cp .env.example .env
 ## Usage
 
 ```bash
-uv run python app.py                      # open the UI
-uv run python app.py owner/repo           # pre-load a repository
+uv run commit-explorer                      # open the UI
+uv run commit-explorer textualize/textual    # pre-load a repository
 ```
 
 **Keyboard shortcuts:** `r` reload, `n` next page, `q` quit.

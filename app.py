@@ -1008,6 +1008,12 @@ class CommitExplorer(App):
         except Exception as e:
             detail_widget.update(f"[red]Error fetching details: {e}[/red]")
 
-if __name__ == "__main__":
+
+def main() -> None:
+    """Entry point for the commit-explorer command."""
     repo = sys.argv[1] if len(sys.argv) > 1 else ""
     CommitExplorer(initial_repo=repo).run()
+
+
+if __name__ == "__main__":
+    main()
