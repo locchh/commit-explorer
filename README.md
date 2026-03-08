@@ -76,6 +76,7 @@ See `.env.example` for all variables. Tokens are optional but strongly recommend
 
 ## Related to
 
+- [Git](https://github.com/git/git.git) - Git
 - [Textualize](https://github.com/Textualize) - The organization behind Textual and Rich
 - [Textual](https://textual.textualize.io/) - The UI framework used
 - [Rich](https://github.com/Textualize/rich) - The text formatting library used
