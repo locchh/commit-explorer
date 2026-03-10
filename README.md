@@ -6,14 +6,14 @@ A terminal UI for exploring git repository history. Clones repositories directly
 ┌─ Toolbar ──────────────────────────────────────────────────────┐
 │ [Provider ▾]  [owner/repo                    ]  [Load]         │
 ├─ Commit list (resizable) ──────┬──┬─ Detail ───────────────────┤
-│ * feat: add login  abc1234 … │  │ [Open in browser]           │
-│ │                              │  │                             │
-│ * fix: null check  def5678 … │  │ SHA     abc1234...          │
-│ ├─╮ Merge branch 'feat'        │  │ Author  Jane Doe            │
-│ │ │                            │  │ Date    2026-03-10          │
-│ [Load more ↓]                  │  │                             │
+│ * feat: add login  abc1234 …   │  │ [Open in browser]          │
+│ │                              │  │                            │
+│ * fix: null check  def5678 …   │  │ SHA     abc1234...         │
+│ ├─╮ Merge branch 'feat'        │  │ Author  Jane Doe           │
+│ │ │                            │  │ Date    2026-03-10         │
+│ [Load more ↓]                  │  │                            │
 │                                │  │ M src/foo.py               │
-└────────────────────────────────┴──┴─────────────────────────────┘
+└────────────────────────────────┴──┴────────────────────────────┘
 ```
 
 ## Quick Start
