@@ -89,6 +89,7 @@ GITLAB_URL=https://gitlab.mycompany.com
 - [Dulwich](https://www.dulwich.io/) — pure-Python git implementation used for cloning
 - [Textual](https://textual.textualize.io/) — TUI framework
 - [Rich](https://github.com/Textualize/rich) — text formatting and ANSI parsing
+- [urllib3](https://urllib3.readthedocs.io/en/stable/) — HTTP client used for API requests
 
 ## License
 
