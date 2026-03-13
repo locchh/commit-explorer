@@ -22,6 +22,8 @@ A terminal UI for exploring git repository history. Clones repositories directly
 uvx --from git+https://github.com/locchh/commit-explorer commit-explorer textualize/textual
 ```
 
+
+
 Or clone and run locally:
 
 ```bash
@@ -30,6 +32,15 @@ cd commit-explorer
 uv sync
 uv run commit-explorer textualize/textual
 ```
+
+Or:
+
+
+```bash
+GIT_SSL_NO_VERIFY=1 uvx --from git+https://github.com/locchh/commit-explorer commit-explorer textualize/textual
+```
+
+
 
 ## Usage
 
