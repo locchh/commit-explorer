@@ -38,7 +38,6 @@ load_dotenv(override=True)
 
 # ── Types ─────────────────────────────────────────────────────────────────────
 
-
 class CommitInfo(NamedTuple):
     sha: str
     short_sha: str
@@ -48,21 +47,18 @@ class CommitInfo(NamedTuple):
     date: str  # ISO format
     parents: list[str]
 
-
 class FileChange(NamedTuple):
     filename: str
     status: str  # added, modified, removed, renamed, etc.
     additions: int
     deletions: int
 
-
 class CommitDetail(NamedTuple):
     info: CommitInfo
     stats: dict[str, int]
     files: list[FileChange]
     refs: list[str]  # issue refs
-    linked_prs: list[dict]  # simplified PR info
-
+    linked_prs: list[dict] # simplified PR info
 
 class RepoInfo(NamedTuple):
     description: str
@@ -75,9 +71,7 @@ class RepoInfo(NamedTuple):
     branches: Optional[int]
     total_commits: Optional[int]
 
-
 # ── Providers (URL builders only) ─────────────────────────────────────────────
-
 
 class GitProvider(ABC):
     @property
@@ -124,7 +118,7 @@ class GitLabProvider(GitProvider):
     def clone_url(self, owner: str, repo: str) -> str:
         token = os.getenv("GITLAB_TOKEN", "")
         creds = f"oauth2:{token}@" if token else ""
-        host_no_scheme = re.sub(r"^https?://", "", self._host)
+        host_no_scheme = re.sub(r'^https?://', '', self._host)
         scheme = "https://" if self._host.startswith("https") else "http://"
         return f"{scheme}{creds}{host_no_scheme}/{quote(owner, safe='')}/{quote(repo, safe='')}.git"
 
@@ -150,7 +144,6 @@ class AzureDevOpsProvider(GitProvider):
 
 
 # ── Git Backend (Dulwich) ──────────────────────────────────────────────────────
-
 
 class _GitBackend:
     """Bare-clone git backend using Dulwich. Stores the clone in a temp dir."""
@@ -180,54 +173,47 @@ class _GitBackend:
 
     def next_page(self) -> list[tuple[CommitInfo, list]]:
         end = min(self._shown + self._PER_PAGE, len(self._graph_data))
-        page = self._graph_data[self._shown : end]
+        page = self._graph_data[self._shown:end]
         self._shown = end
         return page
 
     async def load(self, url: str, depth: Optional[int] = None) -> None:
-
-        # Clean up previous clone
         self.cleanup()
         self._tmpdir = tempfile.mkdtemp(prefix="cex-")
 
         def _do_clone() -> None:
             import io
+            import os
+            import urllib3
             import ssl
             from dulwich import porcelain
-
-            disable_ssl_verify = os.getenv("GIT_SSL_NO_VERIFY", "").lower() in (
-                "1",
-                "true",
-                "yes",
-                "on",
-            )
-
+            
+            # Check if SSL verification should be disabled
+            disable_ssl_verify = os.getenv("GIT_SSL_NO_VERIFY", "").lower() in ("1", "true", "yes")
+            
+            # Setup clone kwargs
+            clone_kwargs = {}
             if disable_ssl_verify:
-                import urllib3
-
+                # Disable warnings about unverified requests
                 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-                original_poolmanager = urllib3.PoolManager
-
-                def patched_poolmanager(*args, **kwargs):
-                    kwargs["cert_reqs"] = ssl.CERT_NONE
-                    kwargs["assert_hostname"] = False
-                    return original_poolmanager(*args, **kwargs)
-
-                urllib3.PoolManager = patched_poolmanager  # type: ignore[misc,assignment]
-
-            try:
-                porcelain.clone(
-                    url,
-                    target=self._tmpdir,
-                    depth=depth,
-                    bare=True,
-                    filter_spec="blob:none",
-                    errstream=io.BytesIO(),
+                
+                # Create a custom pool manager that doesn't verify certificates
+                # and pass it through to the GitClient
+                pool_manager = urllib3.PoolManager(
+                    cert_reqs=ssl.CERT_NONE,
+                    assert_hostname=False
                 )
-            finally:
-                if disable_ssl_verify:
-                    urllib3.PoolManager = original_poolmanager  # type: ignore[misc]
+                clone_kwargs['pool_manager'] = pool_manager
+                
+            porcelain.clone(
+                url,
+                target=self._tmpdir,
+                depth=depth,
+                bare=True,
+                filter_spec="blob:none",  # skip file contents — commits+trees only
+                errstream=io.BytesIO(),
+                **clone_kwargs
+            )
 
         await asyncio.to_thread(_do_clone)
         self._graph_data = await asyncio.to_thread(_build_graph_from_git, self._tmpdir)
@@ -266,34 +252,23 @@ class _GitBackend:
             author_raw = c.author.decode("utf-8", errors="replace")
             m = re.match(r"^(.*?)\s*<(.*)>$", author_raw)
             author = m.group(1).strip() if m else author_raw
-            email = m.group(2).strip() if m else ""
+            email  = m.group(2).strip() if m else ""
 
             dt = datetime.fromtimestamp(
                 c.author_time,
                 tz=timezone(timedelta(seconds=c.author_timezone)),
             )
-            commits.append(
-                CommitInfo(
-                    sha=sha,
-                    short_sha=sha[:7],
-                    message=msg,
-                    author=author,
-                    author_email=email,
-                    date=dt.isoformat(),
-                    parents=parents,
-                )
-            )
+            commits.append(CommitInfo(
+                sha=sha, short_sha=sha[:7],
+                message=msg, author=author, author_email=email,
+                date=dt.isoformat(), parents=parents,
+            ))
         return commits
 
     def get_detail(self, sha: str) -> "CommitDetail":
         import difflib
         from dulwich.repo import Repo
-        from dulwich.diff_tree import (
-            tree_changes,
-            CHANGE_ADD,
-            CHANGE_DELETE,
-            CHANGE_RENAME,
-        )
+        from dulwich.diff_tree import tree_changes, CHANGE_ADD, CHANGE_DELETE, CHANGE_RENAME
 
         repo = Repo(self._tmpdir)
         c = repo[sha.encode()]
@@ -303,19 +278,16 @@ class _GitBackend:
         author_raw = c.author.decode("utf-8", errors="replace")
         m = re.match(r"^(.*?)\s*<(.*)>$", author_raw)
         author = m.group(1).strip() if m else author_raw
-        email = m.group(2).strip() if m else ""
+        email  = m.group(2).strip() if m else ""
         dt = datetime.fromtimestamp(
             c.author_time,
             tz=timezone(timedelta(seconds=c.author_timezone)),
         )
         info = CommitInfo(
-            sha=sha,
-            short_sha=sha[:7],
+            sha=sha, short_sha=sha[:7],
             message=msg_full.split("\n")[0],
-            author=author,
-            author_email=email,
-            date=dt.isoformat(),
-            parents=parents,
+            author=author, author_email=email,
+            date=dt.isoformat(), parents=parents,
         )
 
         parent_tree = None
@@ -330,32 +302,22 @@ class _GitBackend:
         try:
             for change in tree_changes(repo.object_store, parent_tree, c.tree):
                 if change.type == CHANGE_ADD:
-                    status = "added"
+                    status   = "added"
                     filename = change.new.path.decode("utf-8", errors="replace")
                 elif change.type == CHANGE_DELETE:
-                    status = "removed"
+                    status   = "removed"
                     filename = change.old.path.decode("utf-8", errors="replace")
                 elif change.type == CHANGE_RENAME:
-                    status = "renamed"
+                    status   = "renamed"
                     filename = change.new.path.decode("utf-8", errors="replace")
                 else:
-                    status = "modified"
-                    filename = (change.new.path or change.old.path).decode(
-                        "utf-8", errors="replace"
-                    )
+                    status   = "modified"
+                    filename = (change.new.path or change.old.path).decode("utf-8", errors="replace")
 
                 add = del_ = 0
                 try:
-                    old_data = (
-                        repo.object_store[change.old.sha].data
-                        if change.old.sha
-                        else b""
-                    )
-                    new_data = (
-                        repo.object_store[change.new.sha].data
-                        if change.new.sha
-                        else b""
-                    )
+                    old_data = repo.object_store[change.old.sha].data if change.old.sha else b""
+                    new_data = repo.object_store[change.new.sha].data if change.new.sha else b""
                     for line in difflib.unified_diff(
                         old_data.splitlines(True), new_data.splitlines(True)
                     ):
@@ -368,11 +330,8 @@ class _GitBackend:
 
                 total_add += add
                 total_del += del_
-                files.append(
-                    FileChange(
-                        filename=filename, status=status, additions=add, deletions=del_
-                    )
-                )
+                files.append(FileChange(filename=filename, status=status,
+                                        additions=add, deletions=del_))
         except Exception:
             pass
 
@@ -386,7 +345,6 @@ class _GitBackend:
 
     def get_repo_info(self) -> "RepoInfo":
         from dulwich.repo import Repo
-
         r = Repo(self._tmpdir)
         try:
             default_branch = r.refs.get_symrefs().get(b"HEAD", b"refs/heads/main")
@@ -394,8 +352,7 @@ class _GitBackend:
         except Exception:
             default_branch = "main"
         branch_count = sum(
-            1
-            for ref in r.refs.as_dict()
+            1 for ref in r.refs.as_dict()
             if ref.startswith(b"refs/heads/") or ref.startswith(b"refs/remotes/")
         )
         return RepoInfo(
@@ -418,9 +375,7 @@ class _GitBackend:
         self._graph_data = []
         self._shown = 0
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
 
 def fmt_date(iso: str) -> str:
     try:
@@ -430,9 +385,7 @@ def fmt_date(iso: str) -> str:
     except (ValueError, TypeError):
         return iso[:16]
 
-
 # ── Graph Builder ─────────────────────────────────────────────────────────────
-
 
 def _build_graph_from_git(tmpdir: str) -> list[tuple[CommitInfo, list[Text]]]:
     """Run `git log --graph --color=always` on the cloned bare repo and parse
@@ -451,12 +404,8 @@ def _build_graph_from_git(tmpdir: str) -> list[tuple[CommitInfo, list[Text]]]:
 
     proc = subprocess.run(
         [
-            "git",
-            "--git-dir",
-            tmpdir,
-            "log",
-            "--graph",
-            "--color=always",
+            "git", "--git-dir", tmpdir,
+            "log", "--graph", "--color=always",
             f"--format={fmt}",
             "--date=short",
             "--all",
@@ -468,17 +417,17 @@ def _build_graph_from_git(tmpdir: str) -> list[tuple[CommitInfo, list[Text]]]:
 
     output: list[tuple[CommitInfo, list[Text]]] = []
     current_commit: Optional[CommitInfo] = None
-    current_lines: list[Text] = []
+    current_lines:  list[Text] = []
 
     for raw in proc.stdout.splitlines():
         if MARKER in raw:
             graph_part, data = raw.split(MARKER, 1)
             fields = data.split("\x00")
-            sha = fields[0] if len(fields) > 0 else ""
+            sha     = fields[0] if len(fields) > 0 else ""
             subject = fields[1] if len(fields) > 1 else ""
-            author = fields[2] if len(fields) > 2 else ""
-            email = fields[3] if len(fields) > 3 else ""
-            date = fields[4] if len(fields) > 4 else ""
+            author  = fields[2] if len(fields) > 2 else ""
+            email   = fields[3] if len(fields) > 3 else ""
+            date    = fields[4] if len(fields) > 4 else ""
             parents = fields[5].split() if len(fields) > 5 and fields[5] else []
 
             if not sha:
@@ -488,13 +437,9 @@ def _build_graph_from_git(tmpdir: str) -> list[tuple[CommitInfo, list[Text]]]:
                 output.append((current_commit, current_lines))
 
             current_commit = CommitInfo(
-                sha=sha,
-                short_sha=sha[:7],
-                message=subject,
-                author=author,
-                author_email=email,
-                date=date,
-                parents=parents,
+                sha=sha, short_sha=sha[:7],
+                message=subject, author=author, author_email=email,
+                date=date, parents=parents,
             )
             current_lines = [Text.from_ansi(graph_part)]
         else:
@@ -506,9 +451,7 @@ def _build_graph_from_git(tmpdir: str) -> list[tuple[CommitInfo, list[Text]]]:
 
     return output
 
-
 # ── UI Components ─────────────────────────────────────────────────────────────
-
 
 class GraphSplitter(Widget):
     """Horizontal drag bar at the bottom of the left panel to resize the graph column."""
@@ -608,10 +551,10 @@ class CommitItem(ListItem):
         self.graph_lines = graph_lines
 
     def compose(self) -> ComposeResult:
-        sha = self.commit.short_sha
+        sha      = self.commit.short_sha
         msg_text = escape(self.commit.message.split("\n")[0].strip())
-        who = escape(self.commit.author)
-        date = fmt_date(self.commit.date)[:10]
+        who      = escape(self.commit.author)
+        date     = fmt_date(self.commit.date)[:10]
 
         # Build graph cell as a single Text by joining lines with newlines
         graph_text = Text()
@@ -622,16 +565,13 @@ class CommitItem(ListItem):
         graph_height = len(self.graph_lines)
 
         # Single-line info: message + sha + date on one row
-        info_cell = (
-            f"[bold]{msg_text}[/bold]  [cyan]{sha}[/cyan]  [dim]{date}  {who}[/dim]"
-        )
+        info_cell = f"[bold]{msg_text}[/bold]  [cyan]{sha}[/cyan]  [dim]{date}  {who}[/dim]"
         # Pad to match graph height (connector lines have no info)
         info_cell += "\n" * max(0, graph_height - 1)
 
         with Horizontal(classes="commit-row"):
             yield Label(graph_text, classes="graph-col")
-            yield Label(info_cell, classes="info-col", markup=True)
-
+            yield Label(info_cell,  classes="info-col", markup=True)
 
 class CommitExplorer(App):
     TITLE = "Commit Explorer"
@@ -703,14 +643,14 @@ class CommitExplorer(App):
                 [(p.name, k) for k, p in self.providers.items()],
                 value="github",
                 id="provider-select",
-                allow_blank=False,
+                allow_blank=False
             )
             yield Input(
                 placeholder="owner/repo (e.g. paperclipai/paperclip)",
                 id="repo-input",
             )
             yield Button("Load", id="load-btn", variant="primary")
-
+        
         with Horizontal(id="main"):
             with Vertical(id="left"):
                 yield Static("", id="repo-info")
@@ -720,16 +660,9 @@ class CommitExplorer(App):
                 yield GraphSplitter()
             yield Splitter()
             with Vertical(id="right"):
-                yield Button(
-                    "⎋  Open in browser",
-                    id="open-btn",
-                    variant="default",
-                    disabled=True,
-                )
+                yield Button("⎋  Open in browser", id="open-btn", variant="default", disabled=True)
                 with ScrollableContainer(id="right-scroll"):
-                    yield Static(
-                        "[dim]Select a commit to see details.[/dim]", id="detail"
-                    )
+                    yield Static("[dim]Select a commit to see details.[/dim]", id="detail")
         yield Footer()
 
     def _set_graph_col_width(self, width: int) -> None:
@@ -762,9 +695,7 @@ class CommitExplorer(App):
     @on(Button.Pressed, "#open-btn")
     def on_open_pressed(self) -> None:
         if self._current_sha and self._owner:
-            url = self.current_provider.commit_url(
-                self._owner, self._repo, self._current_sha
-            )
+            url = self.current_provider.commit_url(self._owner, self._repo, self._current_sha)
             webbrowser.open(url)
 
     @on(ListView.Selected, "#commits-list")
@@ -790,10 +721,7 @@ class CommitExplorer(App):
         parts = val.split("/", 1)
         owner, repo = parts[0].strip(), parts[1].strip()
         if not owner or not repo or not self._REPO_RE.match(f"{owner}/{repo}"):
-            self.notify(
-                "Invalid owner/repo — use alphanumeric, hyphens, dots only",
-                severity="warning",
-            )
+            self.notify("Invalid owner/repo — use alphanumeric, hyphens, dots only", severity="warning")
             return
 
         self._owner, self._repo = owner, repo
@@ -818,14 +746,10 @@ class CommitExplorer(App):
                 # Show repo info from backend
                 info = self._backend.get_repo_info()
                 repo_widget = self.query_one("#repo-info", Static)
-                lines = [
-                    f"[bold]{escape(self._owner)}/[white]{escape(self._repo)}[/white][/bold]"
-                ]
+                lines = [f"[bold]{escape(self._owner)}/[white]{escape(self._repo)}[/white][/bold]"]
                 meta = []
                 if info.default_branch:
-                    meta.append(
-                        f"default: [magenta]{escape(info.default_branch)}[/magenta]"
-                    )
+                    meta.append(f"default: [magenta]{escape(info.default_branch)}[/magenta]")
                 if info.branches is not None:
                     meta.append(f"{info.branches:,} branches")
                 if info.total_commits is not None:
@@ -883,35 +807,25 @@ class CommitExplorer(App):
                     f"[dim]({d.stats.get('total', 0)} changes)[/dim]"
                 )
 
-            lines.extend(
-                [
-                    "",
-                    "[bold cyan]── Message ──────────────────────────────────────[/bold cyan]",
-                    escape(d.info.message),
-                    "",
-                ]
-            )
+            lines.extend([
+                "",
+                "[bold cyan]── Message ──────────────────────────────────────[/bold cyan]",
+                escape(d.info.message),
+                "",
+            ])
 
             if d.files:
-                lines.append(
-                    f"[bold cyan]── Files Changed ({len(d.files)}) ────────────────────────[/bold cyan]"
-                )
+                lines.append(f"[bold cyan]── Files Changed ({len(d.files)}) ────────────────────────[/bold cyan]")
                 for f in d.files[:60]:
                     color = "white"
-                    if f.status == "added":
-                        color = "green"
-                    elif f.status == "removed":
-                        color = "red"
-                    elif f.status == "modified":
-                        color = "yellow"
-                    elif f.status == "renamed":
-                        color = "blue"
+                    if f.status == "added":    color = "green"
+                    elif f.status == "removed": color = "red"
+                    elif f.status == "modified": color = "yellow"
+                    elif f.status == "renamed":  color = "blue"
                     stats = ""
                     if f.additions or f.deletions:
                         stats = f"[dim](+{f.additions} -{f.deletions})[/dim]"
-                    lines.append(
-                        f"  [{color}]{f.status[0].upper()}[/{color}] {escape(f.filename)}  {stats}"
-                    )
+                    lines.append(f"  [{color}]{f.status[0].upper()}[/{color}] {escape(f.filename)}  {stats}")
                 if len(d.files) > 60:
                     lines.append(f"  [dim]… and {len(d.files) - 60} more[/dim]")
                 lines.append("")
@@ -922,23 +836,18 @@ class CommitExplorer(App):
             detail_widget.update(f"[red]Error: {e}[/red]")
 
 
-async def _export(
-    owner: str, repo: str, provider_key: str, depth: Optional[int]
-) -> None:
+async def _export(owner: str, repo: str, provider_key: str, depth: Optional[int]) -> None:
     """Fetch commits via Dulwich and print the graph to stdout."""
     from rich.console import Console
 
     providers: dict[str, GitProvider] = {
         "github": GitHubProvider(),
         "gitlab": GitLabProvider(),
-        "azure": AzureDevOpsProvider(),
+        "azure":  AzureDevOpsProvider(),
     }
     provider = providers.get(provider_key)
     if provider is None:
-        print(
-            f"Unknown provider '{provider_key}'. Choose from: {', '.join(providers)}",
-            file=sys.stderr,
-        )
+        print(f"Unknown provider '{provider_key}'. Choose from: {', '.join(providers)}", file=sys.stderr)
         sys.exit(1)
 
     backend = _GitBackend()
@@ -965,19 +874,10 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(prog="commit-explorer")
     parser.add_argument("repo", nargs="?", default="", help="owner/repo")
-    parser.add_argument(
-        "--export", action="store_true", help="Print graph to stdout and exit"
-    )
-    parser.add_argument(
-        "--provider", default="github", choices=["github", "gitlab", "azure"]
-    )
-    parser.add_argument(
-        "--depth",
-        type=int,
-        default=None,
-        metavar="N",
-        help="Limit fetch to N commits (default: fetch all)",
-    )
+    parser.add_argument("--export", action="store_true", help="Print graph to stdout and exit")
+    parser.add_argument("--provider", default="github", choices=["github", "gitlab", "azure"])
+    parser.add_argument("--depth", type=int, default=None, metavar="N",
+                        help="Limit fetch to N commits (default: fetch all)")
     args = parser.parse_args()
 
     if args.export:
