@@ -9,12 +9,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 uv sync
 
 # Run the application
-uv run commit-explorer [owner/repo] [--depth N] [--export]
+uv run cex [owner/repo] [--depth N] [--export]
 
 # Examples
-uv run commit-explorer                          # Interactive mode
-uv run commit-explorer torvalds/linux --depth 100
-uv run commit-explorer owner/repo --export     # Print graph to stdout
+uv run cex                          # Interactive mode
+uv run cex torvalds/linux --depth 100
+uv run cex owner/repo --export     # Print graph to stdout
 ```
 
 ## Architecture

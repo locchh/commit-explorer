@@ -19,10 +19,8 @@ A terminal UI for exploring git repository history. Clones repositories directly
 ## Quick Start
 
 ```bash
-uvx --from git+https://github.com/locchh/commit-explorer commit-explorer textualize/textual
+uvx --from git+https://github.com/locchh/commit-explorer cex textualize/textual
 ```
-
-
 
 Or clone and run locally:
 
@@ -30,14 +28,13 @@ Or clone and run locally:
 git clone https://github.com/locchh/commit-explorer
 cd commit-explorer
 uv sync
-uv run commit-explorer textualize/textual
+uv run cex textualize/textual
 ```
 
-Or:
-
+Or (bypass SSL for corporate proxies):
 
 ```bash
-GIT_SSL_NO_VERIFY=1 uvx --from git+https://github.com/locchh/commit-explorer commit-explorer textualize/textual
+GIT_SSL_NO_VERIFY=1 uvx --from git+https://github.com/locchh/commit-explorer cex textualize/textual
 ```
 
 
@@ -45,10 +42,10 @@ GIT_SSL_NO_VERIFY=1 uvx --from git+https://github.com/locchh/commit-explorer com
 ## Usage
 
 ```bash
-uv run commit-explorer                          # open the UI, enter repo manually
-uv run commit-explorer owner/repo               # pre-load a repository
-uv run commit-explorer owner/repo --depth 100   # limit to last 100 commits
-uv run commit-explorer owner/repo --export      # print graph to stdout and exit
+uv run cex                          # open the UI, enter repo manually
+uv run cex owner/repo               # pre-load a repository
+uv run cex owner/repo --depth 100   # limit to last 100 commits
+uv run cex owner/repo --export      # print graph to stdout and exit
 ```
 
 **Keyboard shortcuts:** `r` reload · `n` next page · `q` quit
