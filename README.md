@@ -1,4 +1,4 @@
-# Commit Explorer
+# Commit Explorer (CEX)
 
 A terminal UI for exploring git repository history. Clones repositories directly via the git protocol (no REST API calls) and renders the commit graph exactly as `git log --graph`.
 
