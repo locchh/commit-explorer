@@ -23,7 +23,7 @@ A terminal UI for exploring git repository history. Clones repositories directly
 uvx --from git+https://github.com/locchh/commit-explorer cex textualize/textual
 
 # Use as CLI tool
-uv tool install git+https://github.com/locchh/mkdocs-claude-chat
+uv tool install git+https://github.com/locchh/commit-explorer
 ```
 
 Or clone and run locally:
