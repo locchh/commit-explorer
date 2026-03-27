@@ -19,7 +19,11 @@ A terminal UI for exploring git repository history. Clones repositories directly
 ## Quick Start
 
 ```bash
+# Use in temporary
 uvx --from git+https://github.com/locchh/commit-explorer cex textualize/textual
+
+# Use as CLI tool
+uv tool install git+https://github.com/locchh/mkdocs-claude-chat
 ```
 
 Or clone and run locally:
