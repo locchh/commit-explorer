@@ -89,6 +89,7 @@ class PRMetadata(NamedTuple):
     url: str             # original PR/MR URL
     head_clone_url: str  # clone URL for the head repo (may be a fork)
     head_owner: str      # owner of the head repo (may differ from base owner)
+    description: str     # PR/MR body text
 
 class BranchComparison(NamedTuple):
     base: str
@@ -775,6 +776,7 @@ def _resolve_pr_url(url: str) -> "PRMetadata":
             url=url,
             head_clone_url=head_clone_url,
             head_owner=head_owner,
+            description=data.get("body") or "",
         )
 
     # GitLab: https://gitlab.com/{owner}/{repo}/-/merge_requests/{N}
@@ -816,6 +818,7 @@ def _resolve_pr_url(url: str) -> "PRMetadata":
             url=url,
             head_clone_url=head_clone_url,
             head_owner=head_owner,
+            description=data.get("description") or "",
         )
 
     raise ValueError(
@@ -847,6 +850,11 @@ def _write_export(result: "BranchComparison", pr_meta: "Optional[PRMetadata]" = 
             f"Title:        {pr_meta.title}",
             f"Author:       {pr_meta.author}  |  State: {pr_meta.state}",
         ]
+        if pr_meta.description.strip():
+            lines.append("")
+            lines.append("Description:")
+            for dl in pr_meta.description.strip().splitlines():
+                lines.append(f"  {dl}")
     lines += [
         f"Compare: origin/{result.base} \u2192 origin/{result.target}",
         f"Generated: {now.strftime('%Y-%m-%d %H:%M:%S')}",
@@ -1271,6 +1279,21 @@ class CompareScreen(Screen):
                 "commit log and conflict results may be incomplete[/bold yellow]"
             )
             lines.append("")
+
+        if self._last_pr:
+            pr = self._last_pr
+            lines.append(
+                f"[bold]PR [cyan]#{pr.number}[/cyan]: {escape(pr.title)}[/bold]  "
+                f"[dim]{escape(pr.author)}  |  {pr.state}[/dim]"
+            )
+            if pr.description.strip():
+                lines.append("")
+                for dl in pr.description.strip().splitlines()[:20]:
+                    lines.append(f"  [dim]{escape(dl)}[/dim]")
+                if pr.description.strip().count("\n") >= 20:
+                    lines.append("  [dim]\u2026 (see export for full description)[/dim]")
+            lines.append("")
+
 
         lines.append(
             f"[bold]Compare: [cyan]origin/{escape(result.base)}[/cyan]"
