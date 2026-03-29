@@ -56,10 +56,11 @@ GIT_SSL_NO_VERIFY=1 uvx --from git+https://github.com/locchh/commit-explorer cex
 ## Usage
 
 ```bash
-uv run cex                          # open the UI, enter repo manually
-uv run cex owner/repo               # pre-load a repository
-uv run cex owner/repo --depth 100   # limit to last 100 commits
-uv run cex owner/repo --export      # print graph to stdout and exit
+uv run cex                                        # open the UI, enter repo manually
+uv run cex owner/repo                             # pre-load a repository
+uv run cex owner/repo --depth 100                 # limit to last 100 commits
+uv run cex owner/repo --export                    # print graph to stdout and exit
+uv run cex owner/repo --compare main feature/foo  # compare two branches, write report to .txt
 ```
 
 **Keyboard shortcuts:** `r` reload · `n` next page · `q` quit

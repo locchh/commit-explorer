@@ -1400,6 +1400,41 @@ class CommitExplorer(App):
             detail_widget.update(f"[red]Error: {e}[/red]")
 
 
+async def _compare(owner: str, repo: str, provider_key: str, depth: Optional[int], base: str, target: str) -> None:
+    """Clone repo, compare two branches, write export file, print summary to stdout."""
+    providers: dict[str, GitProvider] = {
+        "github": GitHubProvider(),
+        "gitlab": GitLabProvider(),
+        "azure":  AzureDevOpsProvider(),
+    }
+    provider = providers.get(provider_key)
+    if provider is None:
+        print(f"Unknown provider '{provider_key}'. Choose from: {', '.join(providers)}", file=sys.stderr)
+        sys.exit(1)
+
+    backend = _GitBackend()
+    try:
+        url = provider.clone_url(owner, repo)
+        print(f"Cloning {owner}/{repo}…", file=sys.stderr)
+        await backend.load(url, depth=depth)
+        print(f"Comparing origin/{base} → origin/{target}…", file=sys.stderr)
+        result = await asyncio.to_thread(backend.compare_branches, base, target)
+        path = _write_export(result)
+        print(f"\n{result.stat_summary or 'No differences.'}")
+        if result.file_changes:
+            print(f"\n{len(result.file_changes)} file(s) changed:")
+            for fc in result.file_changes:
+                print(f"  {fc.status[0].upper()} {fc.filename}  (+{fc.additions} -{fc.deletions})")
+        print(f"\n{len(result.unique_commits)} unique commit(s) in origin/{target}")
+        if result.conflicts:
+            print(f"\n⚠ {len(result.conflicts)} conflict(s): {', '.join(cf.filename for cf in result.conflicts)}")
+        else:
+            print("\n✓ Clean merge — no conflicts")
+        print(f"\nExported to {path}")
+    finally:
+        backend.cleanup()
+
+
 async def _export(owner: str, repo: str, provider_key: str, depth: Optional[int]) -> None:
     """Fetch commits via Dulwich and print the graph to stdout."""
     from rich.console import Console
@@ -1439,12 +1474,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="commit-explorer")
     parser.add_argument("repo", nargs="?", default="", help="owner/repo")
     parser.add_argument("--export", action="store_true", help="Print graph to stdout and exit")
+    parser.add_argument("--compare", nargs=2, metavar=("BASE", "TARGET"),
+                        help="Compare two branches and write a detailed report to .txt")
     parser.add_argument("--provider", default="github", choices=["github", "gitlab", "azure"])
     parser.add_argument("--depth", type=int, default=None, metavar="N",
                         help="Limit fetch to N commits (default: fetch all)")
     args = parser.parse_args()
 
-    if args.export:
+    if args.compare:
+        if not args.repo or "/" not in args.repo:
+            parser.error("--compare requires repo in owner/repo format")
+        owner, repo = args.repo.split("/", 1)
+        asyncio.run(_compare(owner, repo, args.provider, args.depth, args.compare[0], args.compare[1]))
+    elif args.export:
         if not args.repo or "/" not in args.repo:
             parser.error("--export requires repo in owner/repo format")
         owner, repo = args.repo.split("/", 1)
