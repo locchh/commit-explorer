@@ -2,6 +2,7 @@
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+PROMPT.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
