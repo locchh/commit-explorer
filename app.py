@@ -830,7 +830,7 @@ def _resolve_pr_url(url: str) -> "PRMetadata":
 def _write_export(result: "BranchComparison", pr_meta: "Optional[PRMetadata]" = None) -> str:
     """Write a BranchComparison to a detailed .txt file in the CWD. Returns the file path."""
     now = datetime.now()
-    date_str = now.strftime("%Y%m%d")
+    date_str = now.strftime("%Y%m%d-%H%M%S")
     if pr_meta:
         owner_safe = pr_meta.owner.replace("/", "-")
         repo_safe = pr_meta.repo.replace("/", "-")
