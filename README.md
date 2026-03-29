@@ -26,6 +26,16 @@ uvx --from git+https://github.com/locchh/commit-explorer cex textualize/textual
 uv tool install git+https://github.com/locchh/commit-explorer
 ```
 
+Or install with specific branch:
+
+```bash
+# Use in temporary
+uvx --from git+https://github.com/locchh/commit-explorer@20260329-205124-branch-compare cex textualize/textual
+
+# Use as CLI tool
+uv tool install git+https://github.com/locchh/commit-explorer@20260329-205124-branch-compare
+```
+
 Or clone and run locally:
 
 ```bash
