@@ -61,6 +61,7 @@ uv run cex owner/repo                             # pre-load a repository
 uv run cex owner/repo --depth 100                 # limit to last 100 commits
 uv run cex owner/repo --export                    # print graph to stdout and exit
 uv run cex owner/repo --compare main feature/foo  # compare two branches, write report to .txt
+uv run cex --pr https://github.com/owner/repo/pull/123  # review a PR/MR, write report to .txt
 ```
 
 **Keyboard shortcuts:** `r` reload · `n` next page · `q` quit

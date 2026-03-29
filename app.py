@@ -76,6 +76,20 @@ class ConflictFile(NamedTuple):
     filename: str
     conflict_text: str  # raw text containing <<<<<<< / ======= / >>>>>>> markers
 
+class PRMetadata(NamedTuple):
+    provider: str        # "github" or "gitlab"
+    owner: str
+    repo: str
+    number: int
+    title: str
+    state: str           # open / closed / merged
+    author: str
+    base: str            # base branch name
+    head: str            # head branch name
+    url: str             # original PR/MR URL
+    head_clone_url: str  # clone URL for the head repo (may be a fork)
+    head_owner: str      # owner of the head repo (may differ from base owner)
+
 class BranchComparison(NamedTuple):
     base: str
     target: str
@@ -394,13 +408,17 @@ class _GitBackend:
             raise RuntimeError(r.stderr.decode("utf-8", errors="replace").strip())
 
     def compare_branches(self, base: str, target: str) -> "BranchComparison":
-        """Fetch remotes and compare two branches. Returns a BranchComparison."""
+        """Fetch remotes and compare two branches. Returns a BranchComparison.
+
+        base and target may be bare branch names (resolved to origin/) or
+        already-qualified refs like 'pr-head/main'.
+        """
         import subprocess
 
         self.fetch_all()
 
-        base_ref = f"origin/{base}"
-        target_ref = f"origin/{target}"
+        base_ref = base if "/" in base and not base.startswith("refs/") and base.split("/")[0] in ("origin", "pr-head") else f"origin/{base}"
+        target_ref = target if "/" in target and not target.startswith("refs/") and target.split("/")[0] in ("origin", "pr-head") else f"origin/{target}"
 
         # Shallow clone detection
         shallow_warning = False
@@ -447,17 +465,23 @@ class _GitBackend:
                                            additions=0, deletions=0))
 
         # Fetch blobs for the two ref tips so --stat / full diff work
-        try:
-            subprocess.run(
-                ["git", "--git-dir", self._tmpdir,
-                 "-c", "fetch.promisor=true",
-                 "fetch", "--filter=blob:none", "origin",
-                 base_ref.replace("origin/", ""),
-                 target_ref.replace("origin/", "")],
-                capture_output=True, timeout=60,
-            )
-        except Exception:
-            pass
+        def _ref_remote_and_branch(ref: str) -> tuple[str, str]:
+            for prefix in ("origin/", "pr-head/"):
+                if ref.startswith(prefix):
+                    return prefix.rstrip("/"), ref[len(prefix):]
+            return "origin", ref
+
+        for _remote, _branch in {_ref_remote_and_branch(base_ref),
+                                   _ref_remote_and_branch(target_ref)}:
+            try:
+                subprocess.run(
+                    ["git", "--git-dir", self._tmpdir,
+                     "-c", "fetch.promisor=true",
+                     "fetch", "--filter=blob:none", _remote, _branch],
+                    capture_output=True, timeout=60,
+                )
+            except Exception:
+                pass
 
         # Shortstat summary (needs blobs for line counts)
         r_short = subprocess.run(
@@ -689,19 +713,141 @@ def _parse_classic_merge_tree(output: str) -> "list[ConflictFile]":
     return conflicts
 
 
-def _write_export(result: "BranchComparison") -> str:
+def _add_fork_remote(tmpdir: str, fork_url: str, branch: str) -> None:
+    """Add 'pr-head' remote pointing at a fork and fetch the given branch."""
+    import subprocess
+    subprocess.run(
+        ["git", "--git-dir", tmpdir, "remote", "remove", "pr-head"],
+        capture_output=True,
+    )
+    r = subprocess.run(
+        ["git", "--git-dir", tmpdir, "remote", "add", "pr-head", fork_url],
+        capture_output=True, encoding="utf-8", errors="replace",
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"remote add failed: {r.stderr.strip()}")
+    r = subprocess.run(
+        ["git", "--git-dir", tmpdir, "fetch", "--filter=blob:none",
+         "pr-head", branch],
+        capture_output=True, encoding="utf-8", errors="replace", timeout=120,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"fetch fork failed: {r.stderr.strip()}")
+
+
+def _resolve_pr_url(url: str) -> "PRMetadata":
+    """Parse a GitHub PR or GitLab MR URL and fetch metadata via the provider API."""
+    import urllib.request
+    import json
+
+    url = url.strip().rstrip("/")
+
+    # GitHub: https://github.com/{owner}/{repo}/pull/{N}
+    gh_m = re.match(
+        r"https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)", url
+    )
+    if gh_m:
+        owner, repo, number = gh_m.group(1), gh_m.group(2), int(gh_m.group(3))
+        token = os.getenv("GITHUB_TOKEN", "")
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{number}"
+        req = urllib.request.Request(api_url, headers={
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            **(({"Authorization": f"Bearer {token}"}) if token else {}),
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+        merged = data.get("merged", False)
+        state = "merged" if merged else data.get("state", "unknown")
+        token = os.getenv("GITHUB_TOKEN", "")
+        head_repo = data["head"].get("repo") or {}
+        head_owner = head_repo.get("owner", {}).get("login", owner)
+        head_repo_name = head_repo.get("name", repo)
+        creds = f"{token}@" if token else ""
+        head_clone_url = f"https://{creds}github.com/{quote(head_owner, safe='')}/{quote(head_repo_name, safe='')}.git"
+        return PRMetadata(
+            provider="github", owner=owner, repo=repo, number=number,
+            title=data.get("title", ""),
+            state=state,
+            author=data.get("user", {}).get("login", ""),
+            base=data["base"]["ref"],
+            head=data["head"]["ref"],
+            url=url,
+            head_clone_url=head_clone_url,
+            head_owner=head_owner,
+        )
+
+    # GitLab: https://gitlab.com/{owner}/{repo}/-/merge_requests/{N}
+    #         or https://gitlab.com/{owner}/{repo}/merge_requests/{N}
+    gl_m = re.match(
+        r"(https?://[^/]+)/([^/]+(?:/[^/]+)*?)(?:/-)?/merge_requests/(\d+)", url
+    )
+    if gl_m:
+        host, path, number = gl_m.group(1), gl_m.group(2), int(gl_m.group(3))
+        parts = path.split("/")
+        owner, repo = "/".join(parts[:-1]), parts[-1]
+        token = os.getenv("GITLAB_TOKEN", "")
+        project_id = quote(path, safe="")
+        api_url = f"{host}/api/v4/projects/{project_id}/merge_requests/{number}"
+        req = urllib.request.Request(api_url, headers={
+            **(({"PRIVATE-TOKEN": token}) if token else {}),
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+        state = data.get("state", "unknown")
+        gl_token = os.getenv("GITLAB_TOKEN", "")
+        source_ns = data.get("source_namespace", {}) or {}
+        head_owner = source_ns.get("full_path", path.rsplit("/", 1)[0])
+        head_repo_name = data.get("source_project_id", "")  # fallback
+        source_http = data.get("source", {}) or {}
+        head_clone_url = source_http.get("http_url_to_repo", "")
+        if not head_clone_url:
+            creds = f"oauth2:{gl_token}@" if gl_token else ""
+            host_no_scheme = re.sub(r'^https?://', '', host)
+            scheme = "https://" if host.startswith("https") else "http://"
+            head_clone_url = f"{scheme}{creds}{host_no_scheme}/{quote(head_owner, safe='')}/{quote(path.rsplit('/', 1)[-1], safe='')}.git"
+        return PRMetadata(
+            provider="gitlab", owner=owner, repo=repo, number=number,
+            title=data.get("title", ""),
+            state=state,
+            author=data.get("author", {}).get("username", ""),
+            base=data["target_branch"],
+            head=data["source_branch"],
+            url=url,
+            head_clone_url=head_clone_url,
+            head_owner=head_owner,
+        )
+
+    raise ValueError(
+        f"Unsupported URL format: {url!r}\n"
+        "Supported: github.com/.../pull/N  or  gitlab.com/.../merge_requests/N"
+    )
+
+
+def _write_export(result: "BranchComparison", pr_meta: "Optional[PRMetadata]" = None) -> str:
     """Write a BranchComparison to a detailed .txt file in the CWD. Returns the file path."""
     now = datetime.now()
     date_str = now.strftime("%Y%m%d")
-    base_safe = result.base.replace("/", "-")
-    target_safe = result.target.replace("/", "-")
-    filename = f"compare-{base_safe}-{target_safe}-{date_str}.txt"
+    if pr_meta:
+        owner_safe = pr_meta.owner.replace("/", "-")
+        repo_safe = pr_meta.repo.replace("/", "-")
+        filename = f"compare-{owner_safe}-{repo_safe}-pr{pr_meta.number}-{date_str}.txt"
+    else:
+        base_safe = result.base.replace("/", "-")
+        target_safe = result.target.replace("/", "-")
+        filename = f"compare-{base_safe}-{target_safe}-{date_str}.txt"
 
     SEP = "=" * 72
     sep = "-" * 72
 
-    lines = [
-        SEP,
+    lines = [SEP]
+    if pr_meta:
+        lines += [
+            f"PR/MR Review: {pr_meta.url}",
+            f"Title:        {pr_meta.title}",
+            f"Author:       {pr_meta.author}  |  State: {pr_meta.state}",
+        ]
+    lines += [
         f"Compare: origin/{result.base} \u2192 origin/{result.target}",
         f"Generated: {now.strftime('%Y-%m-%d %H:%M:%S')}",
     ]
@@ -979,11 +1125,15 @@ class CompareScreen(Screen):
         background: $surface;
     }
     #compare-toolbar {
-        height: 5;
+        height: 8;
         padding: 1;
         background: $panel;
-        layout: horizontal;
+        layout: vertical;
     }
+    #pr-row        { layout: horizontal; height: 3; }
+    #branch-row    { layout: horizontal; height: 3; }
+    #pr-input      { width: 1fr; margin-right: 1; }
+    #pr-btn        { width: 14; }
     #base-input    { width: 1fr; margin-right: 1; }
     #target-input  { width: 1fr; margin-right: 1; }
     #compare-btn   { width: 12; }
@@ -992,23 +1142,36 @@ class CompareScreen(Screen):
     #compare-scroll  { height: 1fr; padding: 1 2; }
     """
 
-    def __init__(self, backend: "_GitBackend") -> None:
+    def __init__(self, backend: "_GitBackend", owner: str = "", repo: str = "", provider: "Optional[GitProvider]" = None) -> None:
         super().__init__()
         self._backend = backend
+        self._owner = owner
+        self._repo = repo
+        self._provider = provider
         self._last_result: Optional[BranchComparison] = None
+        self._last_pr: Optional[PRMetadata] = None
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Horizontal(id="compare-toolbar"):
-            yield Input(placeholder="Base branch (e.g. main)", id="base-input")
-            yield Input(placeholder="Target branch (e.g. feature/foo)", id="target-input")
-            yield Button("Compare", id="compare-btn", variant="primary")
-            yield Button("Export", id="export-btn", disabled=True)
+        with Vertical(id="compare-toolbar"):
+            with Horizontal(id="pr-row"):
+                yield Input(placeholder="PR/MR number (e.g. 123)", id="pr-input")
+                yield Button("Fill branches", id="pr-btn")
+            with Horizontal(id="branch-row"):
+                yield Input(placeholder="Base branch (e.g. main)", id="base-input")
+                yield Input(placeholder="Target branch (e.g. feature/foo)", id="target-input")
+                yield Button("Compare", id="compare-btn", variant="primary")
+                yield Button("Export", id="export-btn", disabled=True)
         yield LoadingIndicator(id="compare-spinner")
         with ScrollableContainer(id="compare-scroll"):
-            yield Static("[dim]Enter branch names and press Compare.[/dim]",
+            yield Static("[dim]Enter branch names or a PR/MR URL and press Compare.[/dim]",
                          id="compare-results")
         yield Footer()
+
+    @on(Input.Submitted, "#pr-input")
+    @on(Button.Pressed, "#pr-btn")
+    def on_pr_submitted(self) -> None:
+        self._run_pr_resolve()
 
     @on(Input.Submitted, "#base-input")
     @on(Input.Submitted, "#target-input")
@@ -1023,10 +1186,53 @@ class CompareScreen(Screen):
     def on_export_pressed(self) -> None:
         if self._last_result is not None:
             try:
-                path = _write_export(self._last_result)
+                path = _write_export(self._last_result, pr_meta=self._last_pr)
                 self.notify(f"Exported to {path}")
             except Exception as e:
                 self.notify(f"Export failed: {e}", severity="error")
+
+    def _build_pr_url(self, number: str) -> str:
+        """Build a full PR/MR URL from a number using the loaded repo context."""
+        if not self._owner or not self._repo or not self._provider:
+            raise ValueError("No repo loaded — cannot resolve PR number.")
+        if isinstance(self._provider, GitHubProvider):
+            return f"https://github.com/{self._owner}/{self._repo}/pull/{number}"
+        if isinstance(self._provider, GitLabProvider):
+            return f"{self._provider._host}/{self._owner}/{self._repo}/-/merge_requests/{number}"
+        raise ValueError("PR number shortcut only supported for GitHub and GitLab.")
+
+    @work
+    async def _run_pr_resolve(self) -> None:
+        raw = self.query_one("#pr-input", Input).value.strip()
+        if not raw:
+            self.notify("Enter a PR/MR number.", severity="warning")
+            return
+        try:
+            url = self._build_pr_url(raw) if raw.isdigit() else raw
+        except ValueError as e:
+            self.notify(str(e), severity="error")
+            return
+        spinner = self.query_one("#compare-spinner")
+        spinner.display = True
+        try:
+            pr = await asyncio.to_thread(_resolve_pr_url, url)
+            self._last_pr = pr
+            # For cross-fork PRs, add the fork as a remote so compare works
+            is_cross_fork = pr.head_owner.lower() != pr.owner.lower()
+            head_ref = pr.head
+            if is_cross_fork and pr.head_clone_url:
+                await asyncio.to_thread(
+                    _add_fork_remote, self._backend._tmpdir, pr.head_clone_url, pr.head
+                )
+                head_ref = f"pr-head/{pr.head}"
+            self.query_one("#base-input", Input).value = pr.base
+            self.query_one("#target-input", Input).value = head_ref
+            self.notify(f"#{pr.number}: {pr.title[:60]}  [{pr.state}]")
+            self._run_comparison()
+        except Exception as e:
+            self.notify(f"PR resolve failed: {e}", severity="error")
+        finally:
+            spinner.display = False
 
     @work
     async def _run_comparison(self) -> None:
@@ -1265,7 +1471,12 @@ class CommitExplorer(App):
 
     def action_compare(self) -> None:
         if self._owner:
-            self.push_screen(CompareScreen(self._backend))
+            self.push_screen(CompareScreen(
+                self._backend,
+                owner=self._owner,
+                repo=self._repo,
+                provider=self.current_provider,
+            ))
 
     def action_reload(self) -> None:
         if self._owner:
@@ -1400,6 +1611,63 @@ class CommitExplorer(App):
             detail_widget.update(f"[red]Error: {e}[/red]")
 
 
+async def _pr_review(url: str, provider_key: str, depth: Optional[int]) -> None:
+    """Resolve a PR/MR URL, clone the repo, compare branches, write export."""
+    print(f"Resolving PR/MR: {url}", file=sys.stderr)
+    try:
+        pr = await asyncio.to_thread(_resolve_pr_url, url)
+    except Exception as e:
+        print(f"Error resolving PR: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"  #{pr.number}: {pr.title}", file=sys.stderr)
+    print(f"  {pr.author}  |  {pr.state}", file=sys.stderr)
+    print(f"  base: {pr.base}  →  head: {pr.head}", file=sys.stderr)
+
+    providers: dict[str, GitProvider] = {
+        "github": GitHubProvider(),
+        "gitlab": GitLabProvider(),
+        "azure":  AzureDevOpsProvider(),
+    }
+    # Prefer provider inferred from URL over CLI flag
+    inferred = pr.provider if pr.provider in providers else provider_key
+    provider = providers[inferred]
+
+    backend = _GitBackend()
+    try:
+        url_clone = provider.clone_url(pr.owner, pr.repo)
+        print(f"Cloning {pr.owner}/{pr.repo}…", file=sys.stderr)
+        await backend.load(url_clone, depth=depth)
+
+        # For cross-fork PRs, add the fork as a remote and fetch the head branch
+        is_cross_fork = pr.head_owner.lower() != pr.owner.lower()
+        head_ref = pr.head
+        if is_cross_fork and pr.head_clone_url:
+            print(f"Adding fork remote: {pr.head_owner}/{pr.repo}…", file=sys.stderr)
+            await asyncio.to_thread(
+                _add_fork_remote, backend._tmpdir, pr.head_clone_url, pr.head
+            )
+            head_ref = f"pr-head/{pr.head}"
+
+        print(f"Comparing origin/{pr.base} → {head_ref}…", file=sys.stderr)
+        result = await asyncio.to_thread(backend.compare_branches, pr.base, head_ref)
+        path = _write_export(result, pr_meta=pr)
+        print(f"\n#{pr.number}: {pr.title}  [{pr.state}]  by {pr.author}")
+        print(f"{result.stat_summary or 'No differences.'}")
+        if result.file_changes:
+            print(f"\n{len(result.file_changes)} file(s) changed:")
+            for fc in result.file_changes:
+                print(f"  {fc.status[0].upper()} {fc.filename}  (+{fc.additions} -{fc.deletions})")
+        print(f"\n{len(result.unique_commits)} unique commit(s) in origin/{pr.head}")
+        if result.conflicts:
+            print(f"\n⚠ {len(result.conflicts)} conflict(s): {', '.join(cf.filename for cf in result.conflicts)}")
+        else:
+            print("\n✓ Clean merge — no conflicts")
+        print(f"\nExported to {path}")
+    finally:
+        backend.cleanup()
+
+
 async def _compare(owner: str, repo: str, provider_key: str, depth: Optional[int], base: str, target: str) -> None:
     """Clone repo, compare two branches, write export file, print summary to stdout."""
     providers: dict[str, GitProvider] = {
@@ -1474,6 +1742,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="commit-explorer")
     parser.add_argument("repo", nargs="?", default="", help="owner/repo")
     parser.add_argument("--export", action="store_true", help="Print graph to stdout and exit")
+    parser.add_argument("--pr", metavar="URL",
+                        help="GitHub PR or GitLab MR URL to review; resolves base/head automatically")
     parser.add_argument("--compare", nargs=2, metavar=("BASE", "TARGET"),
                         help="Compare two branches and write a detailed report to .txt")
     parser.add_argument("--provider", default="github", choices=["github", "gitlab", "azure"])
@@ -1481,7 +1751,9 @@ def main() -> None:
                         help="Limit fetch to N commits (default: fetch all)")
     args = parser.parse_args()
 
-    if args.compare:
+    if args.pr:
+        asyncio.run(_pr_review(args.pr, args.provider, args.depth))
+    elif args.compare:
         if not args.repo or "/" not in args.repo:
             parser.error("--compare requires repo in owner/repo format")
         owner, repo = args.repo.split("/", 1)
