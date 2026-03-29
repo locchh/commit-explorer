@@ -28,6 +28,28 @@ The complete result of comparing two remote tracking branches. Passed from `_Git
 | `unique_commits` | `list[CommitInfo]` | Commits in target but not base (reuses existing `CommitInfo` type) |
 | `conflicts` | `list[ConflictFile]` | Conflicting files; empty list = clean merge |
 | `shallow_warning` | `bool` | True if the clone is shallow and results may be incomplete |
+| `full_diff` | `str` | Full `git diff --no-color` output for export |
+| `full_log` | `str` | Full `git log --stat --no-color --date=iso` output for export |
+
+### `PRMetadata`
+
+Metadata resolved from a GitHub PR or GitLab MR URL via the provider REST API.
+
+| Field | Type | Description |
+|-------|------|-----------|
+| `provider` | `str` | `"github"` or `"gitlab"` |
+| `owner` | `str` | Base repo owner |
+| `repo` | `str` | Base repo name |
+| `number` | `int` | PR/MR number |
+| `title` | `str` | PR/MR title |
+| `state` | `str` | `open`, `closed`, or `merged` |
+| `author` | `str` | PR/MR author username |
+| `base` | `str` | Base branch name |
+| `head` | `str` | Head branch name |
+| `url` | `str` | Original PR/MR URL |
+| `head_clone_url` | `str` | Clone URL for the head repo (may be a fork) |
+| `head_owner` | `str` | Owner of the head repo (may differ from base for cross-fork PRs) |
+| `description` | `str` | PR/MR body text |
 
 ## Reused Existing Types
 
@@ -54,4 +76,15 @@ BranchComparison result displayed
     │
     ├─ user presses Export button → .txt written, notification shown
     └─ user presses Escape → screen dismissed, return to main view
+
+For PR/MR flow (TUI):
+
+```
+User enters PR number → _run_pr_resolve()
+    │
+    ▼ API call resolves base + head branch names + metadata
+    ├─ cross-fork: add pr-head remote, fetch branch
+    ▼ base/target inputs auto-filled → _run_comparison() triggered
+    ▼ BranchComparison result displayed with PR title + description header
+```
 ```

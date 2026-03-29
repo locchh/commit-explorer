@@ -80,7 +80,11 @@
 
 - [X] T016 [P] Add input validation to `CompareScreen` in `app.py` — strip whitespace from branch names; show inline error if either field is empty when Compare is pressed; show `notify()` if `origin/<branch>` ref does not exist after fetch
 - [X] T017 [P] Add shallow-warning banner to `CompareScreen` results rendering in `app.py` — if `BranchComparison.shallow_warning` is True, prepend `"⚠ Shallow clone — commit log and conflict results may be incomplete"` at the top of the results panel
-- [ ] T018 Manual validation per `specs/20260329-205124-branch-compare/quickstart.md` against at least one real repository — confirm all three sections render correctly and export file matches screen content
+- [X] T018 Manual validation per `specs/20260329-205124-branch-compare/quickstart.md` against at least one real repository — confirmed all sections render correctly and export matches screen content
+- [X] T019 Enhanced `_write_export()` to produce detailed report: full `git diff` patch, full `git log --stat`, changed files with +/- counts, PR metadata header when available
+- [X] T020 Added `--compare BASE TARGET` CLI flag to `main()` — clones repo, compares branches, prints summary, writes `.txt` without launching TUI
+- [X] T021 Fixed `filter=blob:none` partial clone: switched to `git diff --name-status` for file list (tree-only), fetch blobs on demand before `--shortstat` and full diff
+- [X] T022 Added PR/MR review: `--pr <URL>` CLI flag + PR number input in TUI; resolves base/head via GitHub/GitLab API; handles cross-fork PRs via `pr-head` remote; export filename encodes PR number; PR title + description shown in TUI and export
 
 ---
 
