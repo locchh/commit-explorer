@@ -19,6 +19,7 @@ from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.screen import Screen
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.widget import Widget
 from textual.widgets import (
@@ -70,6 +71,19 @@ class RepoInfo(NamedTuple):
     open_issues: int
     branches: Optional[int]
     total_commits: Optional[int]
+
+class ConflictFile(NamedTuple):
+    filename: str
+    conflict_text: str  # raw text containing <<<<<<< / ======= / >>>>>>> markers
+
+class BranchComparison(NamedTuple):
+    base: str
+    target: str
+    stat_summary: str         # shortstat line
+    file_changes: list        # list[FileChange]
+    unique_commits: list      # list[CommitInfo]
+    conflicts: list           # list[ConflictFile]
+    shallow_warning: bool
 
 # ── Providers (URL builders only) ─────────────────────────────────────────────
 
@@ -367,6 +381,172 @@ class _GitBackend:
             total_commits=len(self._commits),
         )
 
+    def fetch_all(self) -> None:
+        """Fetch all remote refs into the existing bare clone."""
+        import subprocess
+        r = subprocess.run(
+            ["git", "--git-dir", self._tmpdir, "fetch", "--all", "--quiet"],
+            capture_output=True,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.decode("utf-8", errors="replace").strip())
+
+    def compare_branches(self, base: str, target: str) -> "BranchComparison":
+        """Fetch remotes and compare two branches. Returns a BranchComparison."""
+        import subprocess
+
+        self.fetch_all()
+
+        base_ref = f"origin/{base}"
+        target_ref = f"origin/{target}"
+
+        # Shallow clone detection
+        shallow_warning = False
+        try:
+            r = subprocess.run(
+                ["git", "--git-dir", self._tmpdir, "rev-parse", "--is-shallow-repository"],
+                capture_output=True, encoding="utf-8", errors="replace", timeout=10,
+            )
+            if r.stdout.strip() == "true":
+                shallow_warning = True
+        except Exception:
+            pass
+
+        # Shortstat summary
+        r_short = subprocess.run(
+            ["git", "--git-dir", self._tmpdir, "diff",
+             base_ref, target_ref, "--shortstat", "--no-color"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+        )
+        stat_summary = r_short.stdout.strip()
+
+        # Per-file stat
+        r_stat = subprocess.run(
+            ["git", "--git-dir", self._tmpdir, "diff",
+             base_ref, target_ref, "--stat", "--no-color"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+        )
+        file_changes: list[FileChange] = []
+        for line in r_stat.stdout.splitlines():
+            line = line.strip()
+            if not line or "|" not in line:
+                continue
+            fname, bar = line.split("|", 1)
+            fname = fname.strip()
+            bar = bar.strip()
+            # Skip the summary line ("3 files changed …")
+            if not fname or "changed" in bar:
+                continue
+            add = bar.count("+")
+            del_ = bar.count("-")
+            if add > 0 and del_ == 0:
+                status = "added"
+            elif del_ > 0 and add == 0:
+                status = "removed"
+            else:
+                status = "modified"
+            file_changes.append(FileChange(filename=fname, status=status,
+                                           additions=add, deletions=del_))
+
+        # Unique commits in target not in base
+        r_log = subprocess.run(
+            ["git", "--git-dir", self._tmpdir, "log",
+             f"{base_ref}..{target_ref}",
+             "--format=%H%x00%s%x00%aN%x00%aE%x00%ad%x00%P",
+             "--date=short", "--no-color"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+        )
+        unique_commits: list[CommitInfo] = []
+        for line in r_log.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            fields = line.split("\x00")
+            sha = fields[0] if len(fields) > 0 else ""
+            if not sha:
+                continue
+            unique_commits.append(CommitInfo(
+                sha=sha, short_sha=sha[:7],
+                message=fields[1] if len(fields) > 1 else "",
+                author=fields[2] if len(fields) > 2 else "",
+                author_email=fields[3] if len(fields) > 3 else "",
+                date=fields[4] if len(fields) > 4 else "",
+                parents=fields[5].split() if len(fields) > 5 and fields[5] else [],
+            ))
+
+        # Conflict detection (shallow repos may lack merge-base)
+        conflicts: list[ConflictFile] = []
+        if not shallow_warning:
+            conflicts = self.detect_conflicts(base, target)
+
+        return BranchComparison(
+            base=base, target=target,
+            stat_summary=stat_summary,
+            file_changes=file_changes,
+            unique_commits=unique_commits,
+            conflicts=conflicts,
+            shallow_warning=shallow_warning,
+        )
+
+    def detect_conflicts(self, base: str, target: str) -> "list[ConflictFile]":
+        """Detect merge conflicts between two remote branches."""
+        import subprocess
+
+        base_ref = f"origin/{base}"
+        target_ref = f"origin/{target}"
+
+        # Try git merge-tree --write-tree (git >= 2.38)
+        try:
+            r = subprocess.run(
+                ["git", "--git-dir", self._tmpdir, "-c", "core.bare=true",
+                 "merge-tree", "--write-tree", "--no-messages", "--name-only",
+                 base_ref, target_ref],
+                capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+            )
+            if r.returncode == 0:
+                return []
+            if r.returncode == 1:
+                # First line = merged tree SHA, rest = conflicted filenames
+                lines = r.stdout.strip().splitlines()
+                if not lines:
+                    return []
+                tree_sha = lines[0].strip()
+                conflict_filenames = [l.strip() for l in lines[1:] if l.strip()]
+                conflicts: list[ConflictFile] = []
+                for fname in conflict_filenames:
+                    blob_r = subprocess.run(
+                        ["git", "--git-dir", self._tmpdir, "cat-file", "blob",
+                         f"{tree_sha}:{fname}"],
+                        capture_output=True, encoding="utf-8", errors="replace", timeout=10,
+                    )
+                    if blob_r.returncode == 0:
+                        conflicts.append(ConflictFile(filename=fname,
+                                                      conflict_text=blob_r.stdout))
+                return conflicts
+        except Exception:
+            pass
+
+        # Fallback: classic git merge-tree
+        try:
+            mb_r = subprocess.run(
+                ["git", "--git-dir", self._tmpdir, "merge-base", base_ref, target_ref],
+                capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+            )
+            if mb_r.returncode != 0:
+                return []
+            merge_base = mb_r.stdout.strip()
+            if not merge_base:
+                return []
+
+            mt_r = subprocess.run(
+                ["git", "--git-dir", self._tmpdir, "merge-tree",
+                 merge_base, base_ref, target_ref],
+                capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+            )
+            return _parse_classic_merge_tree(mt_r.stdout)
+        except Exception:
+            return []
+
     def cleanup(self) -> None:
         if self._tmpdir:
             shutil.rmtree(self._tmpdir, ignore_errors=True)
@@ -376,6 +556,121 @@ class _GitBackend:
         self._shown = 0
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _parse_classic_merge_tree(output: str) -> "list[ConflictFile]":
+    """Parse output from classic `git merge-tree <base> <ours> <theirs>`.
+
+    Sections look like:
+        changed in both
+          base  100644 <sha>  path/to/file
+          our   100644 <sha>  path/to/file
+          their 100644 <sha>  path/to/file
+        @@@ -1,3 -1,3 +1,9 @@@
+         context
+        +<<<<<<< .our
+        +ours
+        +=======
+        +theirs
+        +>>>>>>> .their
+    """
+    conflicts: list[ConflictFile] = []
+    current_file = ""
+    in_diff = False
+    diff_lines: list[str] = []
+    has_conflict = False
+
+    SECTION_HEADERS = (
+        "changed in both", "added in both", "removed in both",
+        "added in remote", "removed in remote",
+        "added in local", "removed in local",
+    )
+
+    def _flush() -> None:
+        nonlocal current_file, in_diff, diff_lines, has_conflict
+        if current_file and has_conflict and diff_lines:
+            content = []
+            for dl in diff_lines:
+                if dl.startswith("+"):
+                    content.append(dl[1:])
+                elif dl.startswith(" "):
+                    content.append(dl[1:])
+            conflicts.append(ConflictFile(
+                filename=current_file,
+                conflict_text="\n".join(content),
+            ))
+        current_file = ""
+        in_diff = False
+        diff_lines = []
+        has_conflict = False
+
+    for line in output.splitlines():
+        stripped = line.strip()
+        if any(stripped.startswith(h) for h in SECTION_HEADERS):
+            _flush()
+        elif stripped.startswith("base ") or stripped.startswith("our ") or stripped.startswith("their "):
+            # "  base  100644 sha  path/to/file" — last token is filename
+            parts = stripped.split()
+            if len(parts) >= 4 and not current_file:
+                current_file = parts[-1]
+        elif stripped.startswith("@@@") or stripped.startswith("@@"):
+            in_diff = True
+            diff_lines = []
+        elif in_diff:
+            diff_lines.append(line)
+            if stripped.startswith("+<<<<<<<") or stripped.startswith("<<<<<<< "):
+                has_conflict = True
+
+    _flush()
+    return conflicts
+
+
+def _write_export(result: "BranchComparison") -> str:
+    """Write a BranchComparison to a .txt file in the CWD. Returns the file path."""
+    now = datetime.now()
+    date_str = now.strftime("%Y%m%d")
+    base_safe = result.base.replace("/", "-")
+    target_safe = result.target.replace("/", "-")
+    filename = f"compare-{base_safe}-{target_safe}-{date_str}.txt"
+
+    lines = [
+        f"Compare: origin/{result.base} \u2192 origin/{result.target}",
+        f"Generated: {now.strftime('%Y-%m-%d %H:%M:%S')}",
+    ]
+    if result.shallow_warning:
+        lines.append("\u26a0 Shallow clone \u2014 commit log and conflict results may be incomplete")
+    lines.append("")
+
+    lines.append("\u2500\u2500 Diff Summary " + "\u2500" * 40)
+    lines.append(result.stat_summary if result.stat_summary else "No differences.")
+    lines.append("")
+
+    lines.append(f"\u2500\u2500 Changed Files ({len(result.file_changes)}) " + "\u2500" * 36)
+    for fc in result.file_changes:
+        lines.append(f"  {fc.status[0].upper()} {fc.filename}  (+{fc.additions} -{fc.deletions})")
+    if not result.file_changes:
+        lines.append("  No file changes.")
+    lines.append("")
+
+    lines.append(f"\u2500\u2500 Commits ({len(result.unique_commits)}) " + "\u2500" * 40)
+    for c in result.unique_commits:
+        lines.append(f"  {c.short_sha}  {c.message}  {c.author}  {c.date}")
+    if not result.unique_commits:
+        lines.append("  No unique commits.")
+    lines.append("")
+
+    lines.append("\u2500\u2500 Conflicts " + "\u2500" * 43)
+    if not result.conflicts:
+        lines.append("Clean merge \u2014 no conflicts detected")
+    else:
+        for cf in result.conflicts:
+            lines.append(f"File: {cf.filename}")
+            lines.append(cf.conflict_text)
+            lines.append("")
+
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return filename
+
 
 def fmt_date(iso: str) -> str:
     try:
@@ -573,6 +868,165 @@ class CommitItem(ListItem):
             yield Label(graph_text, classes="graph-col")
             yield Label(info_cell,  classes="info-col", markup=True)
 
+class CompareScreen(Screen):
+    """Modal screen for comparing two remote branches."""
+
+    BINDINGS = [Binding("escape", "dismiss", "Back")]
+
+    CSS = """
+    CompareScreen {
+        background: $surface;
+    }
+    #compare-toolbar {
+        height: 5;
+        padding: 1;
+        background: $panel;
+        layout: horizontal;
+    }
+    #base-input    { width: 1fr; margin-right: 1; }
+    #target-input  { width: 1fr; margin-right: 1; }
+    #compare-btn   { width: 12; }
+    #export-btn    { width: 12; margin-left: 1; }
+    #compare-spinner { height: 3; display: none; }
+    #compare-scroll  { height: 1fr; padding: 1 2; }
+    """
+
+    def __init__(self, backend: "_GitBackend") -> None:
+        super().__init__()
+        self._backend = backend
+        self._last_result: Optional[BranchComparison] = None
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Horizontal(id="compare-toolbar"):
+            yield Input(placeholder="Base branch (e.g. main)", id="base-input")
+            yield Input(placeholder="Target branch (e.g. feature/foo)", id="target-input")
+            yield Button("Compare", id="compare-btn", variant="primary")
+            yield Button("Export", id="export-btn", disabled=True)
+        yield LoadingIndicator(id="compare-spinner")
+        with ScrollableContainer(id="compare-scroll"):
+            yield Static("[dim]Enter branch names and press Compare.[/dim]",
+                         id="compare-results")
+        yield Footer()
+
+    @on(Input.Submitted, "#base-input")
+    @on(Input.Submitted, "#target-input")
+    def on_input_submitted(self) -> None:
+        self._run_comparison()
+
+    @on(Button.Pressed, "#compare-btn")
+    def on_compare_pressed(self) -> None:
+        self._run_comparison()
+
+    @on(Button.Pressed, "#export-btn")
+    def on_export_pressed(self) -> None:
+        if self._last_result is not None:
+            try:
+                path = _write_export(self._last_result)
+                self.notify(f"Exported to {path}")
+            except Exception as e:
+                self.notify(f"Export failed: {e}", severity="error")
+
+    @work
+    async def _run_comparison(self) -> None:
+        base = self.query_one("#base-input", Input).value.strip()
+        target = self.query_one("#target-input", Input).value.strip()
+
+        if not base or not target:
+            self.notify("Enter both branch names.", severity="warning")
+            return
+
+        spinner = self.query_one("#compare-spinner")
+        spinner.display = True
+        results = self.query_one("#compare-results", Static)
+        results.update("[dim]Comparing…[/dim]")
+        self.query_one("#export-btn", Button).disabled = True
+
+        try:
+            result = await asyncio.to_thread(
+                self._backend.compare_branches, base, target
+            )
+            self._last_result = result
+            self.query_one("#export-btn", Button).disabled = False
+            results.update(self._render_comparison(result))
+        except Exception as e:
+            self.notify(f"Error: {e}", severity="error")
+            results.update(f"[red]Error: {escape(str(e))}[/red]")
+        finally:
+            spinner.display = False
+
+    def _render_comparison(self, result: BranchComparison) -> str:
+        lines: list[str] = []
+
+        if result.shallow_warning:
+            lines.append(
+                "[bold yellow]\u26a0 Shallow clone \u2014 "
+                "commit log and conflict results may be incomplete[/bold yellow]"
+            )
+            lines.append("")
+
+        lines.append(
+            f"[bold]Compare: [cyan]origin/{escape(result.base)}[/cyan]"
+            f" \u2192 [cyan]origin/{escape(result.target)}[/cyan][/bold]"
+        )
+        lines.append("")
+
+        lines.append("[bold cyan]\u2500\u2500 Diff Summary \u2500\u2500\u2500\u2500\u2500"
+                     "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+                     "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+                     "\u2500\u2500\u2500\u2500\u2500\u2500\u2500[/bold cyan]")
+        lines.append(escape(result.stat_summary) if result.stat_summary else "[dim]No differences.[/dim]")
+        lines.append("")
+
+        lines.append(
+            f"[bold cyan]\u2500\u2500 Changed Files ({len(result.file_changes)}) "
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500[/bold cyan]"
+        )
+        if result.file_changes:
+            for fc in result.file_changes:
+                color = {"added": "green", "removed": "red"}.get(fc.status, "yellow")
+                stats = f"[dim](+{fc.additions} -{fc.deletions})[/dim]"
+                lines.append(f"  [{color}]{fc.status[0].upper()}[/{color}] "
+                              f"{escape(fc.filename)}  {stats}")
+        else:
+            lines.append("[dim]No file changes.[/dim]")
+        lines.append("")
+
+        lines.append(
+            f"[bold cyan]\u2500\u2500 Commits ({len(result.unique_commits)}) "
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500[/bold cyan]"
+        )
+        if result.unique_commits:
+            for c in result.unique_commits:
+                lines.append(
+                    f"  [cyan]{c.short_sha}[/cyan]  {escape(c.message)}"
+                    f"  [dim]{escape(c.author)}  {c.date}[/dim]"
+                )
+        else:
+            lines.append("[dim]No unique commits.[/dim]")
+        lines.append("")
+
+        lines.append(
+            "[bold cyan]\u2500\u2500 Conflicts \u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500[/bold cyan]"
+        )
+        if not result.conflicts:
+            lines.append("[green]\u2713 Clean merge \u2014 no conflicts detected[/green]")
+        else:
+            for cf in result.conflicts:
+                lines.append(f"[bold red]File: {escape(cf.filename)}[/bold red]")
+                lines.append(escape(cf.conflict_text))
+                lines.append("")
+
+        return "\n".join(lines)
+
+
 class CommitExplorer(App):
     TITLE = "Commit Explorer"
     CSS = """
@@ -617,6 +1071,7 @@ class CommitExplorer(App):
         Binding("q", "quit", "Quit"),
         Binding("r", "reload", "Reload"),
         Binding("n", "more", "Next page"),
+        Binding("c", "compare", "Compare"),
     ]
 
     def __init__(self, initial_repo: str = "", depth: Optional[int] = None) -> None:
@@ -702,6 +1157,15 @@ class CommitExplorer(App):
     def on_commit_selected(self, event: ListView.Selected) -> None:
         if isinstance(event.item, CommitItem):
             self._fetch_detail(event.item.commit.sha)
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        if action == "compare":
+            return bool(self._owner)
+        return True
+
+    def action_compare(self) -> None:
+        if self._owner:
+            self.push_screen(CompareScreen(self._backend))
 
     def action_reload(self) -> None:
         if self._owner:

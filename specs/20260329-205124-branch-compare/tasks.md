@@ -14,7 +14,7 @@
 
 **Purpose**: Verify the environment is ready before touching app.py.
 
-- [ ] T001 Verify `git merge-tree --write-tree` is available (`git --version` ≥ 2.38) and `uv sync` is current
+- [X] T001 Verify `git merge-tree --write-tree` is available (`git --version` ≥ 2.38) and `uv sync` is current
 
 ---
 
@@ -24,10 +24,10 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete.
 
-- [ ] T002 Add `ConflictFile` and `BranchComparison` NamedTuples to the Types section of `app.py` (after existing `RepoInfo` type)
-- [ ] T003 Add `fetch_all()` method to `_GitBackend` in `app.py` — runs `git --git-dir <tmpdir> fetch --all --quiet` via subprocess; raises on failure
-- [ ] T004 Add `CompareScreen(Screen)` skeleton class to `app.py` — two `Input` widgets (base branch, target branch), a "Compare" `Button`, a `ScrollableContainer` with a `Static` results widget, `Escape` binding wired to `self.dismiss()`
-- [ ] T005 Add `Binding("c", "compare", "Compare")` to `CommitExplorer.BINDINGS` in `app.py` and add `action_compare()` method that calls `self.push_screen(CompareScreen(self._backend))` — guard: only active when `self._owner` is set
+- [X] T002 Add `ConflictFile` and `BranchComparison` NamedTuples to the Types section of `app.py` (after existing `RepoInfo` type)
+- [X] T003 Add `fetch_all()` method to `_GitBackend` in `app.py` — runs `git --git-dir <tmpdir> fetch --all --quiet` via subprocess; raises on failure
+- [X] T004 Add `CompareScreen(Screen)` skeleton class to `app.py` — two `Input` widgets (base branch, target branch), a "Compare" `Button`, a `ScrollableContainer` with a `Static` results widget, `Escape` binding wired to `self.dismiss()`
+- [X] T005 Add `Binding("c", "compare", "Compare")` to `CommitExplorer.BINDINGS` in `app.py` and add `action_compare()` method that calls `self.push_screen(CompareScreen(self._backend))` — guard: only active when `self._owner` is set
 
 **Checkpoint**: `uv run cex owner/repo` — pressing `c` opens a blank compare screen; `Escape` returns to main view.
 
@@ -39,10 +39,10 @@
 
 **Independent Test**: Load a repo, press `c`, enter `main` and a feature branch, press Compare. Verify the file list and commit list match `git diff --stat` and `git log main..feature` output.
 
-- [ ] T006 [US1] Implement `_GitBackend.compare_branches(base, target)` in `app.py` — runs `fetch_all()`, then three subprocess calls: `git diff origin/<base> origin/<target> --stat --no-color`, `git diff origin/<base> origin/<target> --shortstat --no-color`, `git log origin/<base>..origin/<target> --format="%H%x00%s%x00%aN%x00%ad" --date=short --no-color`; parses results into `BranchComparison` (conflicts=[], shallow_warning=False for now)
-- [ ] T007 [US1] Add shallow clone detection inside `compare_branches()` in `app.py` — run `git --git-dir <tmpdir> rev-parse --is-shallow-repository`; set `BranchComparison.shallow_warning = True` if output is `"true"`; if `merge-base` fails, set warning and continue
-- [ ] T008 [US1] Implement `CompareScreen._run_comparison()` as a `@work` async method in `app.py` — validates both inputs non-empty, calls `await asyncio.to_thread(self._backend.compare_branches, base, target)`, renders diff summary and unique commits sections into the results `Static`
-- [ ] T009 [US1] Wire `CompareScreen` inputs and Compare button in `app.py` — `Input.Submitted` on either input and `Button.Pressed` on Compare both trigger `_run_comparison()`; show `LoadingIndicator` during work; show `notify()` on error
+- [X] T006 [US1] Implement `_GitBackend.compare_branches(base, target)` in `app.py` — runs `fetch_all()`, then three subprocess calls: `git diff origin/<base> origin/<target> --stat --no-color`, `git diff origin/<base> origin/<target> --shortstat --no-color`, `git log origin/<base>..origin/<target> --format="%H%x00%s%x00%aN%x00%ad" --date=short --no-color`; parses results into `BranchComparison` (conflicts=[], shallow_warning=False for now)
+- [X] T007 [US1] Add shallow clone detection inside `compare_branches()` in `app.py` — run `git --git-dir <tmpdir> rev-parse --is-shallow-repository`; set `BranchComparison.shallow_warning = True` if output is `"true"`; if `merge-base` fails, set warning and continue
+- [X] T008 [US1] Implement `CompareScreen._run_comparison()` as a `@work` async method in `app.py` — validates both inputs non-empty, calls `await asyncio.to_thread(self._backend.compare_branches, base, target)`, renders diff summary and unique commits sections into the results `Static`
+- [X] T009 [US1] Wire `CompareScreen` inputs and Compare button in `app.py` — `Input.Submitted` on either input and `Button.Pressed` on Compare both trigger `_run_comparison()`; show `LoadingIndicator` during work; show `notify()` on error
 
 **Checkpoint**: US1 fully testable independently — compare screen shows real diff and commit data.
 
@@ -54,9 +54,9 @@
 
 **Independent Test**: Use a repo with a known conflict between two branches — verify the conflicting file appears with `<<<<<<<` markers. Use a clean repo — verify "Clean merge" indicator.
 
-- [ ] T010 [US2] Add `_GitBackend.detect_conflicts(base, target)` method to `app.py` — attempts `git --git-dir <tmpdir> -c core.bare=true merge-tree --write-tree --no-messages origin/<base> origin/<target>`; on failure or git < 2.38, falls back to classic `git merge-tree $(git merge-base origin/<base> origin/<target>) origin/<base> origin/<target>`; parses output into `list[ConflictFile]`
-- [ ] T011 [US2] Integrate `detect_conflicts()` into `_GitBackend.compare_branches()` in `app.py` — call after log step; populate `BranchComparison.conflicts`; if merge-base is unavailable (shallow), set `shallow_warning=True` and set `conflicts=[]`
-- [ ] T012 [US2] Add conflicts section to `CompareScreen._run_comparison()` results rendering in `app.py` — if `conflicts` is empty: show `"✓ Clean merge — no conflicts detected"`; otherwise list each `ConflictFile.filename` followed by its `conflict_text` in a clearly delimited block
+- [X] T010 [US2] Add `_GitBackend.detect_conflicts(base, target)` method to `app.py` — attempts `git --git-dir <tmpdir> -c core.bare=true merge-tree --write-tree --no-messages origin/<base> origin/<target>`; on failure or git < 2.38, falls back to classic `git merge-tree $(git merge-base origin/<base> origin/<target>) origin/<base> origin/<target>`; parses output into `list[ConflictFile]`
+- [X] T011 [US2] Integrate `detect_conflicts()` into `_GitBackend.compare_branches()` in `app.py` — call after log step; populate `BranchComparison.conflicts`; if merge-base is unavailable (shallow), set `shallow_warning=True` and set `conflicts=[]`
+- [X] T012 [US2] Add conflicts section to `CompareScreen._run_comparison()` results rendering in `app.py` — if `conflicts` is empty: show `"✓ Clean merge — no conflicts detected"`; otherwise list each `ConflictFile.filename` followed by its `conflict_text` in a clearly delimited block
 
 **Checkpoint**: US2 works independently — conflict section appears correctly on both conflicting and clean repos.
 
@@ -68,9 +68,9 @@
 
 **Independent Test**: After a comparison, press Export. Verify a `.txt` file appears in CWD with the correct filename and all three sections (diff summary, commits, conflicts).
 
-- [ ] T013 [US3] Add an "Export" `Button` to `CompareScreen.compose()` in `app.py` — placed above the results scroll container; initially `disabled=True`
-- [ ] T014 [US3] Implement `_write_export(result: BranchComparison) -> str` function in `app.py` — builds `.txt` content per `contracts/export-format.md`; filename: `compare-{base}-{target}-{YYYYMMDD}.txt` with `/` replaced by `-`; writes to CWD; returns file path
-- [ ] T015 [US3] Wire Export button in `CompareScreen` in `app.py` — `Button.Pressed` calls `_write_export(self._last_result)`; show `self.notify(f"Exported to {path}")` on success; show error notification on write failure; enable button only after a comparison completes (store result in `self._last_result`)
+- [X] T013 [US3] Add an "Export" `Button` to `CompareScreen.compose()` in `app.py` — placed above the results scroll container; initially `disabled=True`
+- [X] T014 [US3] Implement `_write_export(result: BranchComparison) -> str` function in `app.py` — builds `.txt` content per `contracts/export-format.md`; filename: `compare-{base}-{target}-{YYYYMMDD}.txt` with `/` replaced by `-`; writes to CWD; returns file path
+- [X] T015 [US3] Wire Export button in `CompareScreen` in `app.py` — `Button.Pressed` calls `_write_export(self._last_result)`; show `self.notify(f"Exported to {path}")` on success; show error notification on write failure; enable button only after a comparison completes (store result in `self._last_result`)
 
 **Checkpoint**: US3 works independently — export file contains correct content matching what the screen shows.
 
@@ -78,8 +78,8 @@
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T016 [P] Add input validation to `CompareScreen` in `app.py` — strip whitespace from branch names; show inline error if either field is empty when Compare is pressed; show `notify()` if `origin/<branch>` ref does not exist after fetch
-- [ ] T017 [P] Add shallow-warning banner to `CompareScreen` results rendering in `app.py` — if `BranchComparison.shallow_warning` is True, prepend `"⚠ Shallow clone — commit log and conflict results may be incomplete"` at the top of the results panel
+- [X] T016 [P] Add input validation to `CompareScreen` in `app.py` — strip whitespace from branch names; show inline error if either field is empty when Compare is pressed; show `notify()` if `origin/<branch>` ref does not exist after fetch
+- [X] T017 [P] Add shallow-warning banner to `CompareScreen` results rendering in `app.py` — if `BranchComparison.shallow_warning` is True, prepend `"⚠ Shallow clone — commit log and conflict results may be incomplete"` at the top of the results panel
 - [ ] T018 Manual validation per `specs/20260329-205124-branch-compare/quickstart.md` against at least one real repository — confirm all three sections render correctly and export file matches screen content
 
 ---
