@@ -26,6 +26,16 @@ uvx --from git+https://github.com/locchh/commit-explorer cex textualize/textual
 uv tool install git+https://github.com/locchh/commit-explorer
 ```
 
+Or install with specific branch:
+
+```bash
+# Use in temporary
+uvx --from git+https://github.com/locchh/commit-explorer@20260329-205124-branch-compare cex textualize/textual
+
+# Use as CLI tool
+uv tool install git+https://github.com/locchh/commit-explorer@20260329-205124-branch-compare
+```
+
 Or clone and run locally:
 
 ```bash
@@ -46,10 +56,12 @@ GIT_SSL_NO_VERIFY=1 uvx --from git+https://github.com/locchh/commit-explorer cex
 ## Usage
 
 ```bash
-uv run cex                          # open the UI, enter repo manually
-uv run cex owner/repo               # pre-load a repository
-uv run cex owner/repo --depth 100   # limit to last 100 commits
-uv run cex owner/repo --export      # print graph to stdout and exit
+uv run cex                                        # open the UI, enter repo manually
+uv run cex owner/repo                             # pre-load a repository
+uv run cex owner/repo --depth 100                 # limit to last 100 commits
+uv run cex owner/repo --export                    # print graph to stdout and exit
+uv run cex owner/repo --compare main feature/foo  # compare two branches, write report to .txt
+uv run cex --pr https://github.com/owner/repo/pull/123  # review a PR/MR, write report to .txt
 ```
 
 **Keyboard shortcuts:** `r` reload · `n` next page · `q` quit
