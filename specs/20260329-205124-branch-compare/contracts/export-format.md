@@ -17,29 +17,44 @@ compare-{base}-{target}-{YYYYMMDD}.txt
 ## File Structure
 
 ```
+========================================================================
 Compare: origin/{base} → origin/{target}
 Generated: {YYYY-MM-DD HH:MM:SS}
-[Shallow clone warning line if applicable]
+[WARNING: Shallow clone — commit log and conflict results may be incomplete]
 
-── Diff Summary ────────────────────────────────────────
+========================================================================
+
+DIFF SUMMARY
+------------------------------------------------------------------------
 {shortstat line, e.g. "3 files changed, 42 insertions(+), 5 deletions(-)"}
 
-── Changed Files ({n}) ─────────────────────────────────
-{one line per file: status + filename + (+add -del)}
+CHANGED FILES ({n})
+------------------------------------------------------------------------
+  {STATUS}      {filename}    +{additions}  -{deletions}
+  ...
 
-── Commits ({n}) ───────────────────────────────────────
-{one line per commit: short_sha  message  author  date}
+COMMIT LOG ({n} commits in origin/{target} not in origin/{base})
+------------------------------------------------------------------------
+{full git log --stat output with commit SHA, Author, Date, message, file stats}
 
-── Conflicts ───────────────────────────────────────────
+FULL DIFF
+------------------------------------------------------------------------
+{full git diff output — all hunks, context lines, every changed file}
+
+CONFLICTS
+------------------------------------------------------------------------
 {either "Clean merge — no conflicts detected"
  or one block per conflicting file:
    File: {filename}
-   {raw conflict-marker text}
+   ------------------------------------------------------------------------
+   {raw conflict-marker text with <<<<<<< / ======= / >>>>>>> lines}
 }
 ```
 
 ## Invariants
 
 - File is UTF-8 encoded.
-- Sections are always present in the order shown, even if empty (e.g., "No commits" / "Clean merge").
+- Sections are always present in the order shown, even if empty.
 - Shallow warning line is omitted when `shallow_warning` is False.
+- COMMIT LOG uses full `git log --stat` format (full SHA, author email, timestamp, per-file stats).
+- FULL DIFF contains the complete `git diff` output with all hunks untruncated.

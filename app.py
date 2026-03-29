@@ -84,6 +84,8 @@ class BranchComparison(NamedTuple):
     unique_commits: list      # list[CommitInfo]
     conflicts: list           # list[ConflictFile]
     shallow_warning: bool
+    full_diff: str            # full git diff output for export
+    full_log: str             # full git log --stat -p output for export
 
 # ── Providers (URL builders only) ─────────────────────────────────────────────
 
@@ -412,41 +414,85 @@ class _GitBackend:
         except Exception:
             pass
 
-        # Shortstat summary
+        # Per-file list using --name-status (tree-only — works with filter=blob:none)
+        r_ns = subprocess.run(
+            ["git", "--git-dir", self._tmpdir, "diff",
+             base_ref, target_ref, "--name-status", "--no-color", "-z"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+        )
+        file_changes: list[FileChange] = []
+        STATUS_MAP = {"A": "added", "D": "removed", "M": "modified",
+                      "R": "renamed", "C": "copied", "T": "modified",
+                      "U": "modified", "X": "modified"}
+        ns_output = r_ns.stdout
+        ns_tokens = [t for t in ns_output.split("\x00") if t]
+        i = 0
+        while i < len(ns_tokens):
+            token = ns_tokens[i]
+            if not token:
+                i += 1
+                continue
+            code = token[0].upper()
+            if code in ("R", "C") and i + 2 < len(ns_tokens):
+                fname = ns_tokens[i + 2]
+                i += 3
+            elif i + 1 < len(ns_tokens):
+                fname = ns_tokens[i + 1]
+                i += 2
+            else:
+                i += 1
+                continue
+            status = STATUS_MAP.get(code, "modified")
+            file_changes.append(FileChange(filename=fname, status=status,
+                                           additions=0, deletions=0))
+
+        # Fetch blobs for the two ref tips so --stat / full diff work
+        try:
+            subprocess.run(
+                ["git", "--git-dir", self._tmpdir,
+                 "-c", "fetch.promisor=true",
+                 "fetch", "--filter=blob:none", "origin",
+                 base_ref.replace("origin/", ""),
+                 target_ref.replace("origin/", "")],
+                capture_output=True, timeout=60,
+            )
+        except Exception:
+            pass
+
+        # Shortstat summary (needs blobs for line counts)
         r_short = subprocess.run(
             ["git", "--git-dir", self._tmpdir, "diff",
              base_ref, target_ref, "--shortstat", "--no-color"],
             capture_output=True, encoding="utf-8", errors="replace", timeout=30,
         )
         stat_summary = r_short.stdout.strip()
+        if not stat_summary and file_changes:
+            stat_summary = f"{len(file_changes)} file(s) changed"
 
-        # Per-file stat
+        # Back-fill +/- counts from --stat if blobs were fetched
         r_stat = subprocess.run(
             ["git", "--git-dir", self._tmpdir, "diff",
              base_ref, target_ref, "--stat", "--no-color"],
             capture_output=True, encoding="utf-8", errors="replace", timeout=30,
         )
-        file_changes: list[FileChange] = []
-        for line in r_stat.stdout.splitlines():
-            line = line.strip()
-            if not line or "|" not in line:
+        stat_by_file: dict[str, tuple[int, int]] = {}
+        for sline in r_stat.stdout.splitlines():
+            sline = sline.strip()
+            if not sline or "|" not in sline:
                 continue
-            fname, bar = line.split("|", 1)
-            fname = fname.strip()
+            fname_s, bar = sline.split("|", 1)
+            fname_s = fname_s.strip()
             bar = bar.strip()
-            # Skip the summary line ("3 files changed …")
-            if not fname or "changed" in bar:
+            if not fname_s or "changed" in bar:
                 continue
-            add = bar.count("+")
-            del_ = bar.count("-")
-            if add > 0 and del_ == 0:
-                status = "added"
-            elif del_ > 0 and add == 0:
-                status = "removed"
-            else:
-                status = "modified"
-            file_changes.append(FileChange(filename=fname, status=status,
-                                           additions=add, deletions=del_))
+            stat_by_file[fname_s] = (bar.count("+"), bar.count("-"))
+        # Apply counts to file_changes
+        file_changes = [
+            FileChange(filename=fc.filename, status=fc.status,
+                       additions=stat_by_file.get(fc.filename, (0, 0))[0],
+                       deletions=stat_by_file.get(fc.filename, (0, 0))[1])
+            for fc in file_changes
+        ]
 
         # Unique commits in target not in base
         r_log = subprocess.run(
@@ -474,6 +520,23 @@ class _GitBackend:
                 parents=fields[5].split() if len(fields) > 5 and fields[5] else [],
             ))
 
+        # Full diff for export (untruncated)
+        r_diff = subprocess.run(
+            ["git", "--git-dir", self._tmpdir, "diff",
+             base_ref, target_ref, "--no-color"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=60,
+        )
+        full_diff = r_diff.stdout
+
+        # Full log with per-commit stats for export (use default medium format so --stat interleaves correctly)
+        r_full_log = subprocess.run(
+            ["git", "--git-dir", self._tmpdir, "log",
+             f"{base_ref}..{target_ref}",
+             "--stat", "--no-color", "--date=iso"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=60,
+        )
+        full_log = r_full_log.stdout
+
         # Conflict detection (shallow repos may lack merge-base)
         conflicts: list[ConflictFile] = []
         if not shallow_warning:
@@ -486,6 +549,8 @@ class _GitBackend:
             unique_commits=unique_commits,
             conflicts=conflicts,
             shallow_warning=shallow_warning,
+            full_diff=full_diff,
+            full_log=full_log,
         )
 
     def detect_conflicts(self, base: str, target: str) -> "list[ConflictFile]":
@@ -625,47 +690,83 @@ def _parse_classic_merge_tree(output: str) -> "list[ConflictFile]":
 
 
 def _write_export(result: "BranchComparison") -> str:
-    """Write a BranchComparison to a .txt file in the CWD. Returns the file path."""
+    """Write a BranchComparison to a detailed .txt file in the CWD. Returns the file path."""
     now = datetime.now()
     date_str = now.strftime("%Y%m%d")
     base_safe = result.base.replace("/", "-")
     target_safe = result.target.replace("/", "-")
     filename = f"compare-{base_safe}-{target_safe}-{date_str}.txt"
 
+    SEP = "=" * 72
+    sep = "-" * 72
+
     lines = [
+        SEP,
         f"Compare: origin/{result.base} \u2192 origin/{result.target}",
         f"Generated: {now.strftime('%Y-%m-%d %H:%M:%S')}",
     ]
     if result.shallow_warning:
-        lines.append("\u26a0 Shallow clone \u2014 commit log and conflict results may be incomplete")
-    lines.append("")
+        lines.append("WARNING: Shallow clone \u2014 commit log and conflict results may be incomplete")
+    lines += ["", SEP, ""]
 
-    lines.append("\u2500\u2500 Diff Summary " + "\u2500" * 40)
+    # ── Diff Summary ──────────────────────────────────────────────────────────
+    lines.append("DIFF SUMMARY")
+    lines.append(sep)
     lines.append(result.stat_summary if result.stat_summary else "No differences.")
     lines.append("")
 
-    lines.append(f"\u2500\u2500 Changed Files ({len(result.file_changes)}) " + "\u2500" * 36)
-    for fc in result.file_changes:
-        lines.append(f"  {fc.status[0].upper()} {fc.filename}  (+{fc.additions} -{fc.deletions})")
-    if not result.file_changes:
+    # ── Changed Files ─────────────────────────────────────────────────────────
+    lines.append(f"CHANGED FILES ({len(result.file_changes)})")
+    lines.append(sep)
+    if result.file_changes:
+        col_w = max(len(fc.filename) for fc in result.file_changes) + 2
+        for fc in result.file_changes:
+            status_label = fc.status.upper()
+            lines.append(
+                f"  {status_label:<10}  {fc.filename:<{col_w}}  +{fc.additions}  -{fc.deletions}"
+            )
+    else:
         lines.append("  No file changes.")
     lines.append("")
 
-    lines.append(f"\u2500\u2500 Commits ({len(result.unique_commits)}) " + "\u2500" * 40)
-    for c in result.unique_commits:
-        lines.append(f"  {c.short_sha}  {c.message}  {c.author}  {c.date}")
-    if not result.unique_commits:
+    # ── Commit Log ────────────────────────────────────────────────────────────
+    lines.append(f"COMMIT LOG ({len(result.unique_commits)} commits in origin/{result.target} not in origin/{result.base})")
+    lines.append(sep)
+    if result.full_log.strip():
+        lines.append(result.full_log.rstrip())
+    elif result.unique_commits:
+        for c in result.unique_commits:
+            lines.append(f"commit {c.sha}")
+            lines.append(f"Author: {c.author} <{c.author_email}>")
+            lines.append(f"Date:   {c.date}")
+            lines.append(f"")
+            lines.append(f"    {c.message}")
+            lines.append("")
+    else:
         lines.append("  No unique commits.")
     lines.append("")
 
-    lines.append("\u2500\u2500 Conflicts " + "\u2500" * 43)
+    # ── Full Diff ─────────────────────────────────────────────────────────────
+    lines.append("FULL DIFF")
+    lines.append(sep)
+    if result.full_diff.strip():
+        lines.append(result.full_diff.rstrip())
+    else:
+        lines.append("No differences.")
+    lines.append("")
+
+    # ── Conflicts ─────────────────────────────────────────────────────────────
+    lines.append("CONFLICTS")
+    lines.append(sep)
     if not result.conflicts:
         lines.append("Clean merge \u2014 no conflicts detected")
     else:
         for cf in result.conflicts:
             lines.append(f"File: {cf.filename}")
-            lines.append(cf.conflict_text)
+            lines.append(sep)
+            lines.append(cf.conflict_text.rstrip())
             lines.append("")
+    lines.append("")
 
     with open(filename, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -1019,10 +1120,9 @@ class CompareScreen(Screen):
         if not result.conflicts:
             lines.append("[green]\u2713 Clean merge \u2014 no conflicts detected[/green]")
         else:
+            lines.append(f"[bold red]\u26a0 {len(result.conflicts)} conflicting file(s) \u2014 see export for full details[/bold red]")
             for cf in result.conflicts:
-                lines.append(f"[bold red]File: {escape(cf.filename)}[/bold red]")
-                lines.append(escape(cf.conflict_text))
-                lines.append("")
+                lines.append(f"  [red]\u2717[/red] {escape(cf.filename)}")
 
         return "\n".join(lines)
 
