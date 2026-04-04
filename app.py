@@ -987,18 +987,20 @@ def _write_commit_export(detail: "CommitDetail", tmpdir: str, out_dir: str) -> s
     if not info.parents:
         lines.append("No diff available (initial commit).")
     else:
-        # Fetch blobs on demand (partial clone support)
-        try:
-            subprocess.run(
-                ["git", "--git-dir", tmpdir, "-c", "fetch.promisor=true",
-                 "fetch", "--filter=blob:none", "origin"],
-                capture_output=True, timeout=60,
-            )
-        except Exception:
-            pass
+        # Use transient -c flags so git treats this as a partial clone and
+        # lazy-fetches missing blobs from origin. Never written to config file
+        # so Dulwich is unaffected.
         r = subprocess.run(
-            ["git", "--git-dir", tmpdir, "show", info.sha, "--no-color", "-p", "--no-stat"],
-            capture_output=True, encoding="utf-8", errors="replace", timeout=60,
+            [
+                "git",
+                "-c", "remote.origin.promisor=true",
+                "-c", "remote.origin.partialclonefilter=blob:none",
+                "-c", "core.repositoryformatversion=1",
+                "-c", "extensions.partialclone=origin",
+                "--git-dir", tmpdir,
+                "show", info.sha, "--no-color", "-p", "--format=",
+            ],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=120,
         )
         diff_text = r.stdout.strip()
         lines.append(diff_text if diff_text else "No diff output.")
@@ -1841,10 +1843,19 @@ async def _export(owner: str, repo: str, provider_key: str, depth: Optional[int]
         backend.cleanup()
 
 
+def _resolve_sha(tmpdir: str, sha: str) -> Optional[str]:
+    """Resolve a short or full SHA to a full 40-char SHA using git rev-parse. Returns None on failure."""
+    import subprocess
+    r = subprocess.run(
+        ["git", "--git-dir", tmpdir, "rev-parse", "--verify", sha],
+        capture_output=True, encoding="utf-8", errors="replace", timeout=10,
+    )
+    full = r.stdout.strip()
+    return full if r.returncode == 0 and len(full) == 40 else None
+
+
 async def _show(owner: str, repo: str, provider_key: str, sha: str, depth: Optional[int], out_dir: str) -> None:
     """Clone repo, resolve SHA, export full commit details to a .txt file."""
-    from dulwich.repo import Repo
-
     providers: dict[str, GitProvider] = {
         "github": GitHubProvider(),
         "gitlab": GitLabProvider(),
@@ -1861,16 +1872,13 @@ async def _show(owner: str, repo: str, provider_key: str, sha: str, depth: Optio
         print(f"Cloning {owner}/{repo}…", file=sys.stderr)
         await backend.load(url, depth=depth)
 
-        # Resolve SHA (short or full)
-        try:
-            r = Repo(backend._tmpdir)
-            r[sha.encode()]  # raises KeyError if not found
-        except KeyError:
+        full_sha = _resolve_sha(backend._tmpdir, sha)
+        if not full_sha:
             print(f"Error: SHA '{sha}' not found in {owner}/{repo}.", file=sys.stderr)
             sys.exit(1)
 
-        print(f"Exporting commit {sha}…", file=sys.stderr)
-        detail = await asyncio.to_thread(backend.get_detail, sha)
+        print(f"Exporting commit {full_sha[:7]}…", file=sys.stderr)
+        detail = await asyncio.to_thread(backend.get_detail, full_sha)
         path = _write_commit_export(detail, backend._tmpdir, out_dir)
         print(path)
     finally:
@@ -1901,12 +1909,11 @@ async def _range(owner: str, repo: str, provider_key: str, range_shas: list[str]
         r = Repo(backend._tmpdir)
 
         def _resolve(s: str) -> bytes:
-            try:
-                r[s.encode()]
-                return s.encode()
-            except KeyError:
+            full = _resolve_sha(backend._tmpdir, s)
+            if not full:
                 print(f"Error: SHA '{s}' not found in {owner}/{repo}.", file=sys.stderr)
                 sys.exit(1)
+            return full.encode()
 
         if len(range_shas) == 2:
             base_bytes = _resolve(range_shas[0])
