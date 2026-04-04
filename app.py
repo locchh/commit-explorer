@@ -1811,9 +1811,10 @@ async def _compare(owner: str, repo: str, provider_key: str, depth: Optional[int
         backend.cleanup()
 
 
-async def _export(owner: str, repo: str, provider_key: str, depth: Optional[int]) -> None:
-    """Fetch commits via Dulwich and print the graph to stdout."""
-    from rich.console import Console
+async def _export(owner: str, repo: str, provider_key: str, depth: Optional[int], out_dir: Optional[str] = None) -> None:
+    """Fetch commits and render the graph via git log --graph.
+    Prints coloured output to stdout, or writes plain-text to a file if out_dir is given."""
+    import subprocess
 
     providers: dict[str, GitProvider] = {
         "github": GitHubProvider(),
@@ -1827,18 +1828,33 @@ async def _export(owner: str, repo: str, provider_key: str, depth: Optional[int]
 
     backend = _GitBackend()
     try:
-        console = Console(width=300, highlight=False)
         url = provider.clone_url(owner, repo)
         await backend.load(url, depth=depth)
-        for commit, lines in backend.graph_data:
-            date = commit.date[:10]
-            node = lines[0].copy()
-            node.append(f"  {commit.short_sha} ", style="cyan")
-            node.append(commit.message.split("\n")[0].strip(), style="bold")
-            node.append(f"  {commit.author}, {date}", style="dim")
-            console.print(node)
-            for cont in lines[1:]:
-                console.print(cont)
+
+        log_args = [
+            "git", "--git-dir", backend._tmpdir,
+            "log", "--graph",
+            "--format=%h  %s  %an, %ai",
+            "--all",
+        ]
+
+        if out_dir is not None:
+            # Plain-text: no colour, capture and write to file
+            r = await asyncio.to_thread(
+                subprocess.run, log_args + ["--no-color"],
+                capture_output=True, encoding="utf-8", errors="replace",
+            )
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            filename = f"{owner.replace('/', '-')}-{repo}-graph-{ts}.txt"
+            path = os.path.join(out_dir, filename)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(r.stdout)
+            print(path)
+        else:
+            # Coloured: let git write ANSI directly to stdout
+            await asyncio.to_thread(
+                subprocess.run, log_args + ["--color=always"],
+            )
     finally:
         backend.cleanup()
 
@@ -1959,7 +1975,7 @@ def main() -> None:
                         help="Export full details of a single commit to a .txt file")
     parser.add_argument("--range", nargs="+", metavar="SHA",
                         help="Export a commit range: --range BASE TARGET or --range TARGET --depth N")
-    parser.add_argument("--out", metavar="PATH", default="/tmp",
+    parser.add_argument("--out", metavar="PATH", default=None,
                         help="Output folder for exported .txt files (default: /tmp, created if missing)")
     parser.add_argument("--provider", default="github", choices=["github", "gitlab", "azure"])
     parser.add_argument("--depth", type=int, default=None, metavar="N",
@@ -1970,32 +1986,42 @@ def main() -> None:
     if args.range and len(args.range) > 2:
         parser.error("--range accepts 1 or 2 SHAs: --range TARGET --depth N  or  --range BASE TARGET")
 
-    # Ensure output folder exists for all headless modes
-    if args.pr or args.show or args.range or args.compare:
-        os.makedirs(args.out, exist_ok=True)
+    # Resolve output directory:
+    # --export with no --out → stdout (out_dir=None)
+    # all other file-writing modes with no --out → /tmp
+    # any mode with explicit --out → that path
+    is_file_mode = bool(args.pr or args.show or args.range or args.compare)
+    if args.out is not None:
+        out_dir: Optional[str] = args.out
+        if args.export or is_file_mode:
+            os.makedirs(out_dir, exist_ok=True)
+    elif is_file_mode:
+        out_dir = "/tmp"
+    else:
+        out_dir = None  # --export stdout mode or TUI
 
     if args.pr:
-        asyncio.run(_pr_review(args.pr, args.provider, args.depth, args.out))
+        asyncio.run(_pr_review(args.pr, args.provider, args.depth, out_dir))
     elif args.show:
         if not args.repo or "/" not in args.repo:
             parser.error("--show requires repo in owner/repo format")
         owner, repo = args.repo.split("/", 1)
-        asyncio.run(_show(owner, repo, args.provider, args.show, args.depth, args.out))
+        asyncio.run(_show(owner, repo, args.provider, args.show, args.depth, out_dir))
     elif args.range:
         if not args.repo or "/" not in args.repo:
             parser.error("--range requires repo in owner/repo format")
         owner, repo = args.repo.split("/", 1)
-        asyncio.run(_range(owner, repo, args.provider, args.range, args.depth, args.out))
+        asyncio.run(_range(owner, repo, args.provider, args.range, args.depth, out_dir))
     elif args.compare:
         if not args.repo or "/" not in args.repo:
             parser.error("--compare requires repo in owner/repo format")
         owner, repo = args.repo.split("/", 1)
-        asyncio.run(_compare(owner, repo, args.provider, args.depth, args.compare[0], args.compare[1], args.out))
+        asyncio.run(_compare(owner, repo, args.provider, args.depth, args.compare[0], args.compare[1], out_dir))
     elif args.export:
         if not args.repo or "/" not in args.repo:
             parser.error("--export requires repo in owner/repo format")
         owner, repo = args.repo.split("/", 1)
-        asyncio.run(_export(owner, repo, args.provider, args.depth))
+        asyncio.run(_export(owner, repo, args.provider, args.depth, out_dir=out_dir))
     else:
         CommitExplorer(initial_repo=args.repo, depth=args.depth).run()
 
