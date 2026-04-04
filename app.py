@@ -827,8 +827,8 @@ def _resolve_pr_url(url: str) -> "PRMetadata":
     )
 
 
-def _write_export(result: "BranchComparison", pr_meta: "Optional[PRMetadata]" = None) -> str:
-    """Write a BranchComparison to a detailed .txt file in the CWD. Returns the file path."""
+def _write_export(result: "BranchComparison", pr_meta: "Optional[PRMetadata]" = None, out_dir: str = ".") -> str:
+    """Write a BranchComparison to a detailed .txt file. Returns the file path."""
     now = datetime.now()
     date_str = now.strftime("%Y%m%d-%H%M%S")
     if pr_meta:
@@ -922,9 +922,92 @@ def _write_export(result: "BranchComparison", pr_meta: "Optional[PRMetadata]" = 
             lines.append("")
     lines.append("")
 
-    with open(filename, "w", encoding="utf-8") as f:
+    with open(os.path.join(out_dir, filename), "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-    return filename
+    return os.path.join(out_dir, filename)
+
+
+def _slugify(text: str) -> str:
+    """Return a filename-safe slug: lowercase, non-alphanumeric runs → '-', max 40 chars."""
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return slug[:40]
+
+
+def _write_commit_export(detail: "CommitDetail", tmpdir: str, out_dir: str) -> str:
+    """Write full commit details to a .txt file. Returns the file path."""
+    import subprocess
+
+    info = detail.info
+    date_compact = info.date[:10].replace("-", "")
+    slug = _slugify(info.message)
+    filename = f"{date_compact}_{info.short_sha}_{slug}.txt"
+
+    SEP = "=" * 72
+    sep = "-" * 72
+
+    lines = [
+        SEP,
+        f"Commit:    {info.sha}",
+        f"Author:    {info.author} <{info.author_email}>",
+        f"Date:      {info.date}",
+        f"Message:   {info.message}",
+        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "", SEP, "",
+    ]
+
+    # ── Diff Summary ──────────────────────────────────────────────────────────
+    lines.append("DIFF SUMMARY")
+    lines.append(sep)
+    if detail.files:
+        lines.append(
+            f"{detail.stats['total']} file(s) changed, "
+            f"+{detail.stats['additions']} insertions, "
+            f"-{detail.stats['deletions']} deletions"
+        )
+    else:
+        lines.append("No differences.")
+    lines.append("")
+
+    # ── Changed Files ─────────────────────────────────────────────────────────
+    lines.append(f"CHANGED FILES ({len(detail.files)})")
+    lines.append(sep)
+    if detail.files:
+        col_w = max(len(fc.filename) for fc in detail.files) + 2
+        for fc in detail.files:
+            lines.append(
+                f"  {fc.status.upper():<10}  {fc.filename:<{col_w}}  +{fc.additions}  -{fc.deletions}"
+            )
+    else:
+        lines.append("  No file changes.")
+    lines.append("")
+
+    # ── Full Diff ─────────────────────────────────────────────────────────────
+    lines.append("FULL DIFF")
+    lines.append(sep)
+    if not info.parents:
+        lines.append("No diff available (initial commit).")
+    else:
+        # Fetch blobs on demand (partial clone support)
+        try:
+            subprocess.run(
+                ["git", "--git-dir", tmpdir, "-c", "fetch.promisor=true",
+                 "fetch", "--filter=blob:none", "origin"],
+                capture_output=True, timeout=60,
+            )
+        except Exception:
+            pass
+        r = subprocess.run(
+            ["git", "--git-dir", tmpdir, "show", info.sha, "--no-color", "-p", "--no-stat"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=60,
+        )
+        diff_text = r.stdout.strip()
+        lines.append(diff_text if diff_text else "No diff output.")
+    lines.append("")
+
+    path = os.path.join(out_dir, filename)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return path
 
 
 def fmt_date(iso: str) -> str:
@@ -1634,7 +1717,7 @@ class CommitExplorer(App):
             detail_widget.update(f"[red]Error: {e}[/red]")
 
 
-async def _pr_review(url: str, provider_key: str, depth: Optional[int]) -> None:
+async def _pr_review(url: str, provider_key: str, depth: Optional[int], out_dir: str = ".") -> None:
     """Resolve a PR/MR URL, clone the repo, compare branches, write export."""
     print(f"Resolving PR/MR: {url}", file=sys.stderr)
     try:
@@ -1674,7 +1757,7 @@ async def _pr_review(url: str, provider_key: str, depth: Optional[int]) -> None:
 
         print(f"Comparing origin/{pr.base} → {head_ref}…", file=sys.stderr)
         result = await asyncio.to_thread(backend.compare_branches, pr.base, head_ref)
-        path = _write_export(result, pr_meta=pr)
+        path = _write_export(result, pr_meta=pr, out_dir=out_dir)
         print(f"\n#{pr.number}: {pr.title}  [{pr.state}]  by {pr.author}")
         print(f"{result.stat_summary or 'No differences.'}")
         if result.file_changes:
@@ -1691,7 +1774,7 @@ async def _pr_review(url: str, provider_key: str, depth: Optional[int]) -> None:
         backend.cleanup()
 
 
-async def _compare(owner: str, repo: str, provider_key: str, depth: Optional[int], base: str, target: str) -> None:
+async def _compare(owner: str, repo: str, provider_key: str, depth: Optional[int], base: str, target: str, out_dir: str = ".") -> None:
     """Clone repo, compare two branches, write export file, print summary to stdout."""
     providers: dict[str, GitProvider] = {
         "github": GitHubProvider(),
@@ -1710,7 +1793,7 @@ async def _compare(owner: str, repo: str, provider_key: str, depth: Optional[int
         await backend.load(url, depth=depth)
         print(f"Comparing origin/{base} → origin/{target}…", file=sys.stderr)
         result = await asyncio.to_thread(backend.compare_branches, base, target)
-        path = _write_export(result)
+        path = _write_export(result, out_dir=out_dir)
         print(f"\n{result.stat_summary or 'No differences.'}")
         if result.file_changes:
             print(f"\n{len(result.file_changes)} file(s) changed:")
@@ -1758,6 +1841,102 @@ async def _export(owner: str, repo: str, provider_key: str, depth: Optional[int]
         backend.cleanup()
 
 
+async def _show(owner: str, repo: str, provider_key: str, sha: str, depth: Optional[int], out_dir: str) -> None:
+    """Clone repo, resolve SHA, export full commit details to a .txt file."""
+    from dulwich.repo import Repo
+
+    providers: dict[str, GitProvider] = {
+        "github": GitHubProvider(),
+        "gitlab": GitLabProvider(),
+        "azure":  AzureDevOpsProvider(),
+    }
+    provider = providers.get(provider_key)
+    if provider is None:
+        print(f"Unknown provider '{provider_key}'. Choose from: {', '.join(providers)}", file=sys.stderr)
+        sys.exit(1)
+
+    backend = _GitBackend()
+    try:
+        url = provider.clone_url(owner, repo)
+        print(f"Cloning {owner}/{repo}…", file=sys.stderr)
+        await backend.load(url, depth=depth)
+
+        # Resolve SHA (short or full)
+        try:
+            r = Repo(backend._tmpdir)
+            r[sha.encode()]  # raises KeyError if not found
+        except KeyError:
+            print(f"Error: SHA '{sha}' not found in {owner}/{repo}.", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"Exporting commit {sha}…", file=sys.stderr)
+        detail = await asyncio.to_thread(backend.get_detail, sha)
+        path = _write_commit_export(detail, backend._tmpdir, out_dir)
+        print(path)
+    finally:
+        backend.cleanup()
+
+
+async def _range(owner: str, repo: str, provider_key: str, range_shas: list[str], depth: Optional[int], out_dir: str) -> None:
+    """Clone repo, walk a commit range, export one .txt file per commit."""
+    from dulwich.repo import Repo
+    from dulwich.walk import ORDER_DATE
+
+    providers: dict[str, GitProvider] = {
+        "github": GitHubProvider(),
+        "gitlab": GitLabProvider(),
+        "azure":  AzureDevOpsProvider(),
+    }
+    provider = providers.get(provider_key)
+    if provider is None:
+        print(f"Unknown provider '{provider_key}'. Choose from: {', '.join(providers)}", file=sys.stderr)
+        sys.exit(1)
+
+    backend = _GitBackend()
+    try:
+        url = provider.clone_url(owner, repo)
+        print(f"Cloning {owner}/{repo}…", file=sys.stderr)
+        await backend.load(url, depth=depth)
+
+        r = Repo(backend._tmpdir)
+
+        def _resolve(s: str) -> bytes:
+            try:
+                r[s.encode()]
+                return s.encode()
+            except KeyError:
+                print(f"Error: SHA '{s}' not found in {owner}/{repo}.", file=sys.stderr)
+                sys.exit(1)
+
+        if len(range_shas) == 2:
+            base_bytes = _resolve(range_shas[0])
+            target_bytes = _resolve(range_shas[1])
+            entries = list(r.get_walker(include=[target_bytes], exclude=[base_bytes], order=ORDER_DATE))
+            if not entries:
+                print(f"Error: no commits found between '{range_shas[0]}' and '{range_shas[1]}'. "
+                      "SHAs may have no ancestor relationship or range is empty.", file=sys.stderr)
+                sys.exit(1)
+        else:
+            target_bytes = _resolve(range_shas[0])
+            if depth is None:
+                print("Error: --range with a single SHA requires --depth N.", file=sys.stderr)
+                sys.exit(1)
+            entries = list(r.get_walker(include=[target_bytes], max_entries=depth, order=ORDER_DATE))
+
+        # Oldest-first for chronological filenames
+        entries = list(reversed(entries))
+        total = len(entries)
+
+        for n, entry in enumerate(entries, 1):
+            sha = entry.commit.id.decode()
+            print(f"Exporting {n}/{total}…", file=sys.stderr)
+            detail = await asyncio.to_thread(backend.get_detail, sha)
+            path = _write_commit_export(detail, backend._tmpdir, out_dir)
+            print(path)
+    finally:
+        backend.cleanup()
+
+
 def main() -> None:
     """Entry point for the commit-explorer command."""
     import argparse
@@ -1769,18 +1948,42 @@ def main() -> None:
                         help="GitHub PR or GitLab MR URL to review; resolves base/head automatically")
     parser.add_argument("--compare", nargs=2, metavar=("BASE", "TARGET"),
                         help="Compare two branches and write a detailed report to .txt")
+    parser.add_argument("--show", metavar="SHA",
+                        help="Export full details of a single commit to a .txt file")
+    parser.add_argument("--range", nargs="+", metavar="SHA",
+                        help="Export a commit range: --range BASE TARGET or --range TARGET --depth N")
+    parser.add_argument("--out", metavar="PATH", default="/tmp",
+                        help="Output folder for exported .txt files (default: /tmp, created if missing)")
     parser.add_argument("--provider", default="github", choices=["github", "gitlab", "azure"])
     parser.add_argument("--depth", type=int, default=None, metavar="N",
                         help="Limit fetch to N commits (default: fetch all)")
     args = parser.parse_args()
 
+    # Validate --range arg count
+    if args.range and len(args.range) > 2:
+        parser.error("--range accepts 1 or 2 SHAs: --range TARGET --depth N  or  --range BASE TARGET")
+
+    # Ensure output folder exists for all headless modes
+    if args.pr or args.show or args.range or args.compare:
+        os.makedirs(args.out, exist_ok=True)
+
     if args.pr:
-        asyncio.run(_pr_review(args.pr, args.provider, args.depth))
+        asyncio.run(_pr_review(args.pr, args.provider, args.depth, args.out))
+    elif args.show:
+        if not args.repo or "/" not in args.repo:
+            parser.error("--show requires repo in owner/repo format")
+        owner, repo = args.repo.split("/", 1)
+        asyncio.run(_show(owner, repo, args.provider, args.show, args.depth, args.out))
+    elif args.range:
+        if not args.repo or "/" not in args.repo:
+            parser.error("--range requires repo in owner/repo format")
+        owner, repo = args.repo.split("/", 1)
+        asyncio.run(_range(owner, repo, args.provider, args.range, args.depth, args.out))
     elif args.compare:
         if not args.repo or "/" not in args.repo:
             parser.error("--compare requires repo in owner/repo format")
         owner, repo = args.repo.split("/", 1)
-        asyncio.run(_compare(owner, repo, args.provider, args.depth, args.compare[0], args.compare[1]))
+        asyncio.run(_compare(owner, repo, args.provider, args.depth, args.compare[0], args.compare[1], args.out))
     elif args.export:
         if not args.repo or "/" not in args.repo:
             parser.error("--export requires repo in owner/repo format")
