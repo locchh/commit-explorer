@@ -1834,7 +1834,6 @@ async def _export(owner: str, repo: str, provider_key: str, depth: Optional[int]
         log_args = [
             "git", "--git-dir", backend._tmpdir,
             "log", "--graph",
-            "--format=%h  %s  %an, %ai",
             "--all",
         ]
 
