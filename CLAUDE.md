@@ -165,3 +165,10 @@ If completing a task requires a blocked action, stop and ask the user before pro
 ### On Ambiguity
 
 If an action is ambiguous (unclear whether it's safe or matches the user's intent), default to asking rather than guessing. A short confirmation is cheaper than an unintended side effect.
+
+## Active Technologies
+- Python 3.11+ + Dulwich (git wire protocol), Textual (TUI), Rich (ANSI/markup), urllib3 (SSL proxy), python-dotenv, argparse (stdlib), json (stdlib), subprocess (git binary) (20260418-212347-agent-friendly-cli)
+- N/A — no persistent state beyond temporary clone directories (20260418-212347-agent-friendly-cli)
+
+## Recent Changes
+- 20260418-212347-agent-friendly-cli: Added Python 3.11+ + Dulwich (git wire protocol), Textual (TUI), Rich (ANSI/markup), urllib3 (SSL proxy), python-dotenv, argparse (stdlib), json (stdlib), subprocess (git binary)
