@@ -2,57 +2,57 @@
 
 from __future__ import annotations
 
-import io
 import json
 from unittest.mock import patch
 
 import pytest
 
-import app
+from commit_explorer.export import _slugify
+from commit_explorer.pr import parse_classic_merge_tree, resolve_pr_url
+from commit_explorer.utils import fmt_date
 
 
 class TestFmtDate:
     def test_iso_with_z(self):
-        assert app.fmt_date("2024-01-15T12:34:56Z") == "2024-01-15 12:34"
+        assert fmt_date("2024-01-15T12:34:56Z") == "2024-01-15 12:34"
 
     def test_iso_with_offset(self):
-        assert app.fmt_date("2024-01-15T12:34:56+00:00") == "2024-01-15 12:34"
+        assert fmt_date("2024-01-15T12:34:56+00:00") == "2024-01-15 12:34"
 
     def test_iso_date_only(self):
-        # fromisoformat accepts "YYYY-MM-DD"
-        assert app.fmt_date("2024-01-15") == "2024-01-15 00:00"
+        assert fmt_date("2024-01-15") == "2024-01-15 00:00"
 
     def test_unparseable_falls_back_to_prefix(self):
-        assert app.fmt_date("not a date") == "not a date"[:16]
+        assert fmt_date("not a date") == "not a date"[:16]
 
     def test_empty(self):
-        assert app.fmt_date("") == ""
+        assert fmt_date("") == ""
 
 
 class TestSlugify:
     def test_basic(self):
-        assert app._slugify("Hello World") == "hello-world"
+        assert _slugify("Hello World") == "hello-world"
 
     def test_punctuation_runs(self):
-        assert app._slugify("feat: add CLI export!!!") == "feat-add-cli-export"
+        assert _slugify("feat: add CLI export!!!") == "feat-add-cli-export"
 
     def test_unicode_stripped(self):
-        assert app._slugify("café — résumé") == "caf-r-sum"
+        assert _slugify("café — résumé") == "caf-r-sum"
 
     def test_max_length_40(self):
         long = "a" * 80
-        assert len(app._slugify(long)) == 40
+        assert len(_slugify(long)) == 40
 
     def test_leading_trailing_dashes_stripped(self):
-        assert app._slugify("---hi---") == "hi"
+        assert _slugify("---hi---") == "hi"
 
     def test_empty(self):
-        assert app._slugify("") == ""
+        assert _slugify("") == ""
 
 
 class TestParseClassicMergeTree:
     def test_no_conflicts_returns_empty(self):
-        assert app._parse_classic_merge_tree("") == []
+        assert parse_classic_merge_tree("") == []
 
     def test_detects_conflict_block(self):
         sample = (
@@ -68,7 +68,7 @@ class TestParseClassicMergeTree:
             "+theirs content\n"
             "+>>>>>>> .their\n"
         )
-        conflicts = app._parse_classic_merge_tree(sample)
+        conflicts = parse_classic_merge_tree(sample)
         assert len(conflicts) == 1
         assert conflicts[0].filename == "path/to/file"
         assert "<<<<<<<" in conflicts[0].conflict_text
@@ -84,7 +84,7 @@ class TestParseClassicMergeTree:
             "@@@ -1 -1 +1 @@@\n"
             " harmless\n"
         )
-        assert app._parse_classic_merge_tree(sample) == []
+        assert parse_classic_merge_tree(sample) == []
 
 
 def _fake_urlopen(response_bytes: bytes):
@@ -108,7 +108,7 @@ def _fake_urlopen(response_bytes: bytes):
 class TestResolvePrUrl:
     def test_invalid_url_raises(self):
         with pytest.raises(ValueError):
-            app._resolve_pr_url("https://example.com/not/a/pr")
+            resolve_pr_url("https://example.com/not/a/pr")
 
     def test_github_pr_parsed(self, clean_env):
         payload = {
@@ -125,7 +125,7 @@ class TestResolvePrUrl:
         }
         fake = _fake_urlopen(json.dumps(payload).encode())
         with patch("urllib.request.urlopen", fake):
-            meta = app._resolve_pr_url("https://github.com/octo/repo/pull/42")
+            meta = resolve_pr_url("https://github.com/octo/repo/pull/42")
         assert meta.provider == "github"
         assert meta.owner == "octo"
         assert meta.repo == "repo"
@@ -150,7 +150,7 @@ class TestResolvePrUrl:
         }
         fake = _fake_urlopen(json.dumps(payload).encode())
         with patch("urllib.request.urlopen", fake):
-            meta = app._resolve_pr_url("https://github.com/o/r/pull/1")
+            meta = resolve_pr_url("https://github.com/o/r/pull/1")
         assert meta.state == "merged"
 
     def test_gitlab_mr_parsed(self, clean_env):
@@ -166,7 +166,7 @@ class TestResolvePrUrl:
         }
         fake = _fake_urlopen(json.dumps(payload).encode())
         with patch("urllib.request.urlopen", fake):
-            meta = app._resolve_pr_url(
+            meta = resolve_pr_url(
                 "https://gitlab.com/grp/proj/-/merge_requests/7"
             )
         assert meta.provider == "gitlab"

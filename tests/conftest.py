@@ -10,15 +10,11 @@ from __future__ import annotations
 import asyncio
 import os
 import pathlib
-import sys
 
 import pytest
 
-# Make the project root importable so tests can `import app`.
-ROOT = pathlib.Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-
-import app  # noqa: E402
+from commit_explorer.backend import GitBackend
+from commit_explorer.providers import GitHubProvider
 
 TEST_REPO_OWNER = "locchh"
 TEST_REPO_NAME = "commit-explorer"
@@ -26,11 +22,10 @@ TEST_REPO = f"{TEST_REPO_OWNER}/{TEST_REPO_NAME}"
 
 
 @pytest.fixture(scope="session")
-def cloned_backend() -> "app._GitBackend":
-    """A single _GitBackend cloned once per test session."""
-    backend = app._GitBackend()
-    provider = app.GitHubProvider()
-    url = provider.clone_url(TEST_REPO_OWNER, TEST_REPO_NAME)
+def cloned_backend() -> GitBackend:
+    """A single GitBackend cloned once per test session."""
+    backend = GitBackend()
+    url = GitHubProvider().clone_url(TEST_REPO_OWNER, TEST_REPO_NAME)
     try:
         asyncio.run(backend.load(url, depth=None))
     except Exception as exc:
