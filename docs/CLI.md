@@ -20,6 +20,7 @@ cex [REPO] [OPTIONS]
 | `--range SHA [SHA]` | Emit a commit range — `--range BASE TARGET` or `--range TARGET --depth N` |
 | `--compare BASE TARGET` | Compare two branches and emit a detailed report |
 | `--pr URL` | Review a PR/MR by URL (provider inferred) |
+| `--init --type TYPE` | Download skills into the current project for the chosen editor |
 
 ### Selectors & routing
 
@@ -113,7 +114,24 @@ cex owner/repo --provider gitlab
 
 ---
 
-### 2. Export graph (`--export`)
+### 2. Editor integration (`--init --type TYPE`)
+
+Downloads `cex` skills from the GitHub repo and installs them into the current project's editor config directory.
+
+```bash
+cex --init --type claude      # → .claude/skills/
+cex --init --type windsurf    # → .windsurf/skills/
+cex --init --type cursor      # → .cursor/skills/
+cex --init --type copilot     # → .copilot/skills/
+```
+
+Each skill is written as `<skill-name>/SKILL.md` under the target directory (created if missing). Re-running updates existing files.
+
+`--init` requires `--type` — omitting it is an error.
+
+---
+
+### 3. Export graph (`--export`)
 
 Prints a paginated commit graph to stdout.
 
@@ -137,7 +155,7 @@ File-history mode (`--file PATH`) emits a flat one-line-per-commit listing of ev
 
 ---
 
-### 3. Single commit (`--show SHA`)
+### 4. Single commit (`--show SHA`)
 
 ```bash
 cex owner/repo --show abc1234                      # file list only (no diff)
@@ -152,7 +170,7 @@ Short (7+ chars) and full SHAs are both accepted.
 
 ---
 
-### 4. Commit range (`--range SHA [SHA]`)
+### 5. Commit range (`--range SHA [SHA]`)
 
 ```bash
 # Form 1: all commits between two SHAs
@@ -172,7 +190,7 @@ In stdout mode, entries are separated by `\n---\n`. In `--out` mode, one `.txt` 
 
 ---
 
-### 5. Branch comparison (`--compare BASE TARGET`)
+### 6. Branch comparison (`--compare BASE TARGET`)
 
 ```bash
 cex owner/repo --compare main feature/foo                         # file list, no diff
@@ -185,7 +203,7 @@ cex owner/repo --compare main feature/foo --out ./reports
 
 ---
 
-### 6. PR / MR review (`--pr URL`)
+### 7. PR / MR review (`--pr URL`)
 
 Resolves a GitHub PR or GitLab MR URL, clones the repo, and compares base → head. Supports cross-fork PRs.
 
