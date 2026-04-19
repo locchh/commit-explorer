@@ -1,0 +1,14 @@
+{
+  "name": "commit-explorer-marketplace",
+  "owner": {
+    "name": "LocCH"
+  },
+  "plugins": [
+    {
+      "name": "commit-explorer",
+      "source": "./",
+      "description": "Teaches Claude Code to use the cex CLI to answer history questions about remote git repositories via the repo-archaeology skill.",
+      "version": "0.1.0"
+    }
+  ]
+}
