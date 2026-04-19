@@ -39,6 +39,7 @@ cex [REPO] [OPTIONS]
 | `--diff` | — | Include full diff; implies `--max-lines 500` unless set |
 | `--no-diff` | — | Explicitly suppress the diff (wins over `--diff`) |
 | `--file PATH` | — | On `--show`/`--compare`/`--pr`/`--range`: restrict diff to this file (implies `--diff`). On `--export`: filter commit list to commits that touched PATH (rename-aware). Repeatable. |
+| `--cat` | — | Emit the **full file content** at SHA instead of a diff. Requires `--show` and `--file`. Repeatable `--file` supported. |
 
 ### Size caps
 
@@ -83,10 +84,13 @@ Headless commands climb from cheapest → fullest. Agents should start at the to
 | 1 | `--summary` | Metadata + diff stat line (≤ 20 lines) |
 | 2 | *(default)* | Metadata + file list (no diff body) |
 | 3 | `--file PATH` | Diff restricted to one file |
+| 3b | `--file PATH --cat` | Full file content at that commit (no diff) |
 | 4 | `--diff` | Full diff, capped at 500 lines (truncation marker emitted) |
 | 5 | `--diff --max-lines 0` | Uncapped full diff |
 
 Priority when multiple flags are passed: `--summary` > `--no-diff` > `--diff` > `--file`.
+
+`--cat` is orthogonal to the diff ladder — it bypasses the diff entirely and returns the raw file bytes at the given SHA. Only valid with `--show`.
 
 ---
 
@@ -158,15 +162,19 @@ File-history mode (`--file PATH`) emits a flat one-line-per-commit listing of ev
 ### 4. Single commit (`--show SHA`)
 
 ```bash
-cex owner/repo --show abc1234                      # file list only (no diff)
-cex owner/repo --show abc1234 --summary            # metadata + stat line only
-cex owner/repo --show abc1234 --diff               # full diff (capped at 500 lines)
-cex owner/repo --show abc1234 --file src/app.py    # diff for that file only
-cex owner/repo --show abc1234 --format json        # structured output
-cex owner/repo --show abc1234 --out ./artifacts    # write file + print path
+cex owner/repo --show abc1234                               # file list only (no diff)
+cex owner/repo --show abc1234 --summary                     # metadata + stat line only
+cex owner/repo --show abc1234 --diff                        # full diff (capped at 500 lines)
+cex owner/repo --show abc1234 --file src/app.py             # diff for that file only
+cex owner/repo --show abc1234 --file src/app.py --cat       # full file content at SHA
+cex owner/repo --show abc1234 --file a.py --file b.py --cat # multiple files
+cex owner/repo --show abc1234 --format json                 # structured output
+cex owner/repo --show abc1234 --out ./artifacts             # write file + print path
 ```
 
 Short (7+ chars) and full SHAs are both accepted.
+
+`--cat` fetches the blob on demand from the partial clone (same lazy-fetch mechanism as `--diff`). In text mode with a single `--file`, raw content is emitted directly; with multiple `--file` flags each block is prefixed with `=== path ===`. In JSON mode the response has `"kind": "file_content"` with a `"files"` array of `{"path", "content"}` objects. With `--out`, each file is written as `<short-sha>_<basename>` and the path is printed.
 
 ---
 
@@ -315,7 +323,8 @@ cex torvalds/linux --export --file kernel/sched/core.c
 cex torvalds/linux --show abc1234                 # file list
 cex torvalds/linux --show abc1234 --summary       # stats only
 cex torvalds/linux --show abc1234 --diff          # full diff (capped)
-cex torvalds/linux --show abc1234 --file foo.c    # one file's diff
+cex torvalds/linux --show abc1234 --file foo.c         # one file's diff
+cex torvalds/linux --show abc1234 --file foo.c --cat   # full file content at SHA
 
 # Structured output for agents
 cex torvalds/linux --show abc1234 --format json | jq .summary
