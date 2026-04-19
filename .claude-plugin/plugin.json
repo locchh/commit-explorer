@@ -1,0 +1,12 @@
+{
+  "name": "commit-explorer",
+  "version": "0.1.0",
+  "description": "Teaches Claude Code to use the `cex` CLI to answer history questions about remote git repositories (file evolution, branch/PR diffs, commit ranges) via the repo-archaeology skill.",
+  "author": {
+    "name": "LocCH"
+  },
+  "homepage": "https://github.com/locchh/commit-explorer",
+  "repository": "https://github.com/locchh/commit-explorer",
+  "license": "MIT",
+  "keywords": ["git", "history", "skill", "cex", "commit-explorer", "archaeology"]
+}

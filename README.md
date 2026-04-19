@@ -99,6 +99,17 @@ uv run cex owner/repo --compare main feature/foo --out ./reports
 
 See [`docs/CLI.md`](docs/CLI.md) for the full reference (every flag, pagination, JSON schema, size caps, colour control).
 
+### Claude Code plugin
+
+This repo ships as a Claude Code plugin that bundles a `repo-archaeology` skill — it teaches Claude Code how to drive `cex` with progressive disclosure to answer history questions about remote repos.
+
+```
+/plugin marketplace add locchh/commit-explorer
+/plugin install commit-explorer@commit-explorer
+```
+
+The plugin distributes the skill only; `cex` itself must be installed separately (`uv tool install git+https://github.com/locchh/commit-explorer`) since plugins can't ship native binaries.
+
 ## How it works
 
 1. **Clone** — uses [Dulwich](https://www.dulwich.io/) to bare-clone the repository with `filter=blob:none` (commits and trees only, no file contents). Fast even for large repos.
