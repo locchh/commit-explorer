@@ -286,12 +286,16 @@ class TestPagination:
         markers = self._count_commit_markers(r.stdout)
         assert markers <= 5
 
+    def _has_pagination_footer(self, text: str) -> bool:
+        """True if stdout contains the ``Next: cex …`` pagination footer line."""
+        import re
+        return bool(re.search(r"^\s*Next:\s+cex\s+", text, re.MULTILINE))
+
     def test_export_footer_when_more_commits(self, cli_env):
         """A small --limit on a repo with more commits produces a Next: hint."""
         r = _run(TEST_REPO, "--export", "--limit", "3", env=cli_env)
         assert r.returncode == 0, r.stderr
-        if "Next:" in r.stdout:
-            # Footer includes both lines and the verbatim next-page command.
+        if self._has_pagination_footer(r.stdout):
             assert "commits shown" in r.stdout
             assert "--offset 3" in r.stdout
             assert "--limit 3" in r.stdout
@@ -308,8 +312,8 @@ class TestPagination:
     def test_export_limit_zero_is_unbounded(self, cli_env):
         r = _run(TEST_REPO, "--export", "--limit", "0", env=cli_env)
         assert r.returncode == 0, r.stderr
-        # Unbounded mode: no Next: footer
-        assert "Next:" not in r.stdout
+        # Unbounded mode: no pagination footer line
+        assert not self._has_pagination_footer(r.stdout)
 
 
 class TestNewFlagsInHelp:
