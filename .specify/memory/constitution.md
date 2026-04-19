@@ -1,35 +1,57 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: (unfilled template) → 1.0.0
-Initial constitution — all placeholders replaced for the first time.
+Version change: 1.0.0 → 1.1.0
+Amendment: Replace Principle I (Single-File Architecture) with Focused Package
+Architecture to reflect the existing src/commit_explorer/ layout. The
+monolithic app.py rule was already violated by the refactor that produced
+backend.py / cli.py / export.py / models.py / pr.py / providers.py / ui/app.py
+along with the 73-test suite. The new principle codifies the current layout
+and forbids further fragmentation without a MINOR bump.
 
-Modified principles: N/A (first fill)
-Added sections: Core Principles, Technology Stack, Development Workflow, Governance
-Removed sections: N/A
+Modified principles:
+  - I. Single-File Architecture → I. Focused Package Architecture
+
+Added sections: None
+Removed sections: None
 
 Templates reviewed:
-  ✅ .specify/templates/plan-template.md — Constitution Check section already present; gates align with principles below.
-  ✅ .specify/templates/spec-template.md — Functional Requirements use MUST/SHOULD language consistent with this constitution.
-  ✅ .specify/templates/tasks-template.md — Phase structure and parallel task guidance align with Simplicity and single-file principles.
-  ✅ .claude/commands/speckit.constitution.md — Command file references generic `.specify/memory/constitution.md`; no agent-specific name leakage.
+  ✅ .specify/templates/plan-template.md — Constitution Check gate still valid; principle name change is editorial.
+  ✅ .specify/templates/spec-template.md — Unchanged.
+  ✅ .specify/templates/tasks-template.md — Unchanged.
+  ✅ CLAUDE.md — "Architecture" section describing app.py monolith is stale; to be updated in Phase 8 (T045).
 
-Deferred TODOs: None — all fields resolved from codebase context.
+Deferred TODOs: None.
 -->
 
 # Commit Explorer (CEX) Constitution
 
 ## Core Principles
 
-### I. Single-File Architecture
+### I. Focused Package Architecture
 
-The entire application MUST live in `app.py`. No splitting into packages, submodules, or
-separate modules unless absolutely unavoidable. All types, providers, git backend, graph
-rendering, and Textual UI belong in that single file.
+The application lives in the `src/commit_explorer/` package. Each module owns a single
+concern and SHOULD stay small (≤ ~500 lines). The current layout is normative:
 
-**Rationale**: Single-file layout enables zero-install usage via `uvx`, trivial code audits,
-and eliminates the cognitive overhead of multi-module navigation. The ~900-line budget
-is a soft ceiling — violate it only with explicit justification.
+- `cli.py` — argument parsing, command dispatch, progressive-disclosure wiring
+- `backend.py` — Dulwich-based clone, DAG walk, diff computation
+- `providers.py` — URL builders for GitHub / GitLab / Azure DevOps
+- `pr.py` — PR/MR URL resolution + fork-remote plumbing
+- `export.py` — text-format writers for single-commit and branch-compare views
+- `format.py` — JSON / ndjson renderers and `OutputConfig` (introduced in the
+  agent-friendly CLI feature; MAY be absent on older branches)
+- `models.py` — `NamedTuple` domain types shared across modules
+- `ui/app.py` — Textual TUI
+
+New top-level modules MUST NOT be added without a MINOR version bump to this constitution.
+Splitting an existing module (e.g. breaking `cli.py` into subpackages) also requires a
+MINOR bump. Deep nesting is forbidden: the package stays flat with at most one level
+(`ui/` is the only exception).
+
+**Rationale**: The package layout reflects real concerns (network, rendering, parsing,
+presentation) and keeps each file small enough to audit. A hard ceiling on module count
+prevents the codebase from drifting into a deep tree that erases the "trivial audit"
+property the monolithic app.py originally targeted.
 
 ### II. Protocol-First Data Access
 
@@ -92,8 +114,9 @@ Adding or removing any item from this list is a MINOR version bump to the consti
 - The `--export` flag MUST remain functional as a non-interactive smoke test:
   `uv run cex owner/repo --export`.
 - Commit messages MUST follow Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`).
-- No test suite exists at this time; acceptance testing is manual via the TUI. If a
-  test suite is introduced in future, it SHOULD use `pytest`.
+- A `pytest` suite lives under `tests/`. Baseline green is a precondition for every
+  new task; adding a feature without failing-then-passing tests for its new code paths
+  is a governance violation.
 
 ## Governance
 
@@ -113,4 +136,4 @@ All feature planning (speckit workflow) MUST perform a Constitution Check gate i
 
 Runtime development guidance lives in `CLAUDE.md` at the repository root.
 
-**Version**: 1.0.0 | **Ratified**: 2026-03-07 | **Last Amended**: 2026-03-29
+**Version**: 1.1.0 | **Ratified**: 2026-03-07 | **Last Amended**: 2026-04-19

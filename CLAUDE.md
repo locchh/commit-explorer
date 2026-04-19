@@ -9,31 +9,76 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 uv sync
 
 # Run the application
-uv run cex [owner/repo] [--depth N] [--export]
+uv run cex [owner/repo] [flags]
 
 # Examples
-uv run cex                          # Interactive mode
+uv run cex                                      # Interactive TUI
 uv run cex torvalds/linux --depth 100
-uv run cex owner/repo --export     # Print graph to stdout
+uv run cex owner/repo --export                  # First 50 commits → stdout
+uv run cex owner/repo --show SHA --diff         # Full details + diff (capped)
+uv run cex owner/repo --compare main feat       # Diff between branches
+uv run cex --pr https://github.com/o/r/pull/42  # Review a PR
+
+# Progressive disclosure flags (agent-friendly CLI)
+--summary            # Metadata only (no file list, no diff)
+--diff               # Include diff body (implies --max-lines 500)
+--no-diff            # Suppress diff explicitly
+--file PATH          # Restrict diff to one file; on --export: file-history mode
+--max-lines N        # Cap stdout at N lines; 0 = unbounded
+--max-bytes N        # Cap stdout at N bytes; 0 = unbounded
+--limit N / --offset M  # Paginate --export / --range (default 50 / 0)
+--format {text,json,ndjson}  # Structured output for agents
+--color {auto,always,never}
+--out PATH           # Write to file(s) at PATH; prints the resolved path(s)
 ```
 
 ## Architecture
 
-The entire application lives in a single file: `app.py` (~890 lines).
+The app is split into focused modules under `src/commit_explorer/`:
+
+- `cli.py` — argparse + handlers (`_export`, `_compare`, `_show`, `_range`, `_pr_review`)
+- `format.py` — `OutputConfig`, JSON/ndjson renderers, ANSI stripping
+- `export.py` — text-file writers (`write_export`, `write_commit_export`)
+- `backend.py` — `GitBackend` (Dulwich clone, diff, branch compare)
+- `providers.py` — GitHub / GitLab / Azure DevOps URL builders
+- `pr.py` — PR/MR URL parsing + cross-fork remote handling
+- `models.py` — `CommitInfo`, `CommitDetail`, `BranchComparison`, etc.
+- `ui/app.py` — Textual TUI
+
+### Output Contract
+
+Every command **defaults to stdout**. With `--out PATH` the handler writes
+files into that directory (creating it if needed) and prints the resolved
+path(s) to stdout. All progress/chatter goes to stderr — stdout stays
+safe for shell parsing and agent piping.
+
+### Progressive Disclosure Ladder
+
+Stdout-default handlers climb from cheapest → fullest:
+
+1. `--summary`               — metadata + stat line only
+2. *(default)*               — file list, no diff
+3. `--file PATH`             — diff for a single file
+4. `--diff`                  — full diff, capped at 500 lines
+5. `--diff --max-lines 0`    — uncapped
+
+`--format json` emits a schema-stable object (every mandatory key always
+present, snake_case, ANSI-free). `--format ndjson` emits one commit object
+per line followed by a `{"kind":"page",...}` footer with a `next` command.
 
 ### Layers
 
-1. **Git Providers** (`GitHubProvider`, `GitLabProvider`, `AzureDevOpsProvider`) — subclasses of `GitProvider` ABC. Each builds authenticated clone URLs and browser commit URLs from environment tokens.
+1. **Git Providers** (`GitHubProvider`, `GitLabProvider`, `AzureDevOpsProvider` in `providers.py`) — subclasses of `GitProvider` ABC. Each builds authenticated clone URLs and browser commit URLs from environment tokens.
 
-2. **`_GitBackend`** — manages git operations via Dulwich (pure-Python git):
+2. **`GitBackend`** (`backend.py`) — manages git operations via Dulwich (pure-Python git):
    - `load(url, depth)` — bare-clones with `filter=blob:none` (no blobs, just commits+trees) into a temp dir
-   - `_extract_commits()` — walks the DAG, returns `CommitInfo` namedtuples
+   - `build_graph()` — walks the DAG, returns `CommitInfo` namedtuples
    - `get_detail(sha)` — on-demand: computes file diffs using `tree_changes()` + `difflib.unified_diff()`
-   - Pagination: 30 commits per page
+   - `compare_branches(base, target)` — fetch + diff two remote branches
 
-3. **`_build_graph_from_git()`** — renders the commit graph by running `git log --graph --color=always` as a subprocess. Uses `\x01`/`\x00` markers to parse commit lines vs. graph decoration lines without regex. Converts ANSI colors to Rich `Text` objects.
+3. **Graph renderer** (`backend.build_graph`) — runs `git log --graph --color=always` as a subprocess. Uses `\x01`/`\x00` markers to parse commit lines vs. graph decoration lines without regex. Converts ANSI colors to Rich `Text` objects.
 
-4. **Textual UI** — `CommitExplorer(App)` is the root. Key widgets:
+4. **Textual UI** (`ui/app.py`) — `CommitExplorer(App)` is the root. Key widgets:
    - `CommitItem(ListItem)` — one row per commit (graph line + metadata)
    - `Splitter` / `GraphSplitter` — draggable dividers for resizing panels
    - Background work via Textual's `@work` decorator; spinner shown during clone/fetch

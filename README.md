@@ -55,20 +55,49 @@ GIT_SSL_NO_VERIFY=1 uvx --from git+https://github.com/locchh/commit-explorer cex
 
 ## Usage
 
+### Interactive TUI
+
 ```bash
-uv run cex                                        # open the UI, enter repo manually
-uv run cex owner/repo                             # pre-load a repository
-uv run cex owner/repo --depth 100                 # limit to last 100 commits
-uv run cex owner/repo --export                    # print graph to stdout and exit
-uv run cex owner/repo --compare main feature/foo  # compare two branches, write report to .txt
-uv run cex --pr https://github.com/owner/repo/pull/123  # review a PR/MR, write report to .txt
+uv run cex                            # open UI, enter repo manually
+uv run cex owner/repo                 # pre-load a repository
+uv run cex owner/repo --depth 100     # limit to last 100 commits
 ```
 
-**Keyboard shortcuts:** `r` reload · `n` next page · `q` quit
+**Keyboard shortcuts:** `r` reload · `n` next page · `q` quit  
+**Resize panels** by dragging the vertical divider between commit list and detail view.  
+**Open in browser** — select a commit and click the button in the top-right.
 
-**Resize panels** by dragging the vertical divider between the commit list and detail view.
+### Headless CLI (stdout-default, agent-friendly)
 
-**Open in browser** — select a commit and click the button in the top-right to open it on the provider's website.
+Every headless command streams to stdout by default. Progressive-disclosure
+flags (`--summary`, `--diff`, `--file`, `--max-lines`, `--format json`, …)
+let you start cheap and climb to the full diff only when needed.
+
+```bash
+# Commit graph (first 50 with a Next: hint)
+uv run cex owner/repo --export
+uv run cex owner/repo --export --offset 50 --limit 50       # next page
+uv run cex owner/repo --export --file src/app.py            # file history
+
+# Single commit — progressive disclosure
+uv run cex owner/repo --show SHA                            # file list (no diff)
+uv run cex owner/repo --show SHA --summary                  # stats only
+uv run cex owner/repo --show SHA --diff                     # full diff (cap 500 lines)
+uv run cex owner/repo --show SHA --file src/app.py          # one file's diff
+
+# Branch / PR comparison
+uv run cex owner/repo --compare main feature/foo --diff
+uv run cex --pr https://github.com/owner/repo/pull/123 --summary
+
+# Structured output for agents
+uv run cex owner/repo --show SHA --format json
+uv run cex owner/repo --export --format ndjson
+
+# Write reports to disk
+uv run cex owner/repo --compare main feature/foo --out ./reports
+```
+
+See [`docs/CLI.md`](docs/CLI.md) for the full reference (every flag, pagination, JSON schema, size caps, colour control).
 
 ## How it works
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import pathlib
 
 import pytest
@@ -152,3 +153,131 @@ class TestWriteCommitExport:
         assert detail.info.sha in text
         assert "FULL DIFF" in text
         assert "DIFF SUMMARY" in text
+
+
+class TestStreamMode:
+    """T012 — stream= writes to IO object and returns None; out_dir still returns path."""
+
+    def test_write_export_stream_returns_none(self, tmp_path):
+        result = _make_branch_comparison()
+        buf = io.StringIO()
+        r = write_export(result, stream=buf)
+        assert r is None
+        text = buf.getvalue()
+        assert "DIFF SUMMARY" in text
+        assert "src/app.py" in text
+        # No files created
+        assert list(tmp_path.iterdir()) == []
+
+    def test_write_export_rejects_both_destinations(self, tmp_path):
+        result = _make_branch_comparison()
+        with pytest.raises(ValueError):
+            write_export(result, out_dir=str(tmp_path), stream=io.StringIO())
+
+    def test_write_export_rejects_neither_destination(self):
+        result = _make_branch_comparison()
+        with pytest.raises(ValueError):
+            write_export(result)
+
+    def test_write_export_out_dir_still_returns_path(self, tmp_path):
+        result = _make_branch_comparison()
+        path = write_export(result, out_dir=str(tmp_path))
+        assert path is not None
+        assert pathlib.Path(path).exists()
+
+    def test_write_commit_export_stream_returns_none(self, tmp_path, cloned_backend):
+        info = CommitInfo(
+            sha="e" * 40, short_sha="e" * 7,
+            message="stream test", author="A", author_email="a@x",
+            date="2024-02-01T00:00:00", parents=[],
+        )
+        detail = CommitDetail(
+            info=info,
+            stats={"additions": 0, "deletions": 0, "total": 0},
+            files=[], refs=[], linked_prs=[],
+        )
+        buf = io.StringIO()
+        r = write_commit_export(detail, cloned_backend.tmpdir, stream=buf)
+        assert r is None
+        assert "Commit:    " + info.sha in buf.getvalue()
+
+    def test_write_commit_export_rejects_both_destinations(self, cloned_backend, tmp_path):
+        info = CommitInfo(
+            sha="f" * 40, short_sha="f" * 7,
+            message="x", author="A", author_email="a@x",
+            date="2024-02-01T00:00:00", parents=[],
+        )
+        detail = CommitDetail(
+            info=info, stats={"additions": 0, "deletions": 0, "total": 0},
+            files=[], refs=[], linked_prs=[],
+        )
+        with pytest.raises(ValueError):
+            write_commit_export(
+                detail, cloned_backend.tmpdir,
+                out_dir=str(tmp_path), stream=io.StringIO(),
+            )
+
+
+class TestSectionControl:
+    """T029 — include_files / include_diff / file_filter selectively strip output."""
+
+    def test_include_diff_false_omits_full_diff(self):
+        result = _make_branch_comparison()
+        buf = io.StringIO()
+        write_export(result, stream=buf, include_diff=False)
+        out = buf.getvalue()
+        assert "FULL DIFF" not in out
+        assert "CONFLICTS" not in out
+        # metadata + file list still present
+        assert "DIFF SUMMARY" in out
+        assert "CHANGED FILES" in out
+
+    def test_include_files_false_omits_file_list(self):
+        result = _make_branch_comparison()
+        buf = io.StringIO()
+        write_export(result, stream=buf, include_files=False)
+        out = buf.getvalue()
+        assert "CHANGED FILES" not in out
+        assert "COMMIT LOG" not in out
+        # FULL DIFF still present (include_diff defaults True)
+        assert "FULL DIFF" in out
+
+    def test_summary_shape_both_false(self):
+        result = _make_branch_comparison()
+        buf = io.StringIO()
+        write_export(result, stream=buf, include_files=False, include_diff=False)
+        out = buf.getvalue()
+        assert "FULL DIFF" not in out
+        assert "CHANGED FILES" not in out
+        assert "CONFLICTS" not in out
+        assert "DIFF SUMMARY" in out  # stat summary always present
+
+    def test_file_filter_restricts_full_diff(self):
+        result = _make_branch_comparison(
+            full_diff=(
+                "diff --git a/src/app.py b/src/app.py\n+app change\n"
+                "diff --git a/src/other.py b/src/other.py\n+other change\n"
+            ),
+        )
+        buf = io.StringIO()
+        write_export(result, stream=buf, file_filter=["src/app.py"])
+        out = buf.getvalue()
+        assert "app change" in out
+        assert "other change" not in out
+
+    def test_commit_export_include_diff_false(self, cloned_backend):
+        info = CommitInfo(
+            sha="a" * 40, short_sha="a" * 7,
+            message="no-diff test", author="A", author_email="a@x",
+            date="2024-01-01T00:00:00", parents=["b" * 40],
+        )
+        detail = CommitDetail(
+            info=info, stats={"additions": 0, "deletions": 0, "total": 0},
+            files=[FileChange("x.py", "modified", 0, 0)],
+            refs=[], linked_prs=[],
+        )
+        buf = io.StringIO()
+        write_commit_export(detail, cloned_backend.tmpdir, stream=buf, include_diff=False)
+        out = buf.getvalue()
+        assert "FULL DIFF" not in out
+        assert "CHANGED FILES" in out
