@@ -975,7 +975,15 @@ def main() -> None:
             owner, repo, args.provider, args.depth,
             args.compare[0], args.compare[1], config,
         ))
-    elif args.export:
+    elif args.export or (
+        args.repo
+        and "/" in args.repo
+        and (
+            args.summary or args.diff or args.no_diff or args.file
+            or args.fmt != "text"
+            or args.limit != 50 or args.offset != 0 or args.depth is not None
+        )
+    ):
         if not args.repo or "/" not in args.repo:
             parser.error("--export requires repo in owner/repo format")
         owner, repo = args.repo.split("/", 1)
