@@ -181,6 +181,24 @@ class GitBackend:
             linked_prs=[],
         )
 
+    def get_file_content(self, sha: str, path: str) -> Optional[str]:
+        """Return the full content of ``path`` at ``sha``, fetching the blob on demand."""
+        r = subprocess.run(
+            [
+                "git",
+                "-c", "remote.origin.promisor=true",
+                "-c", "remote.origin.partialclonefilter=blob:none",
+                "-c", "core.repositoryformatversion=1",
+                "-c", "extensions.partialclone=origin",
+                "--git-dir", self._tmpdir,
+                "show", f"{sha}:{path}",
+            ],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=120,
+        )
+        if r.returncode != 0:
+            return None
+        return r.stdout
+
     def get_repo_info(self) -> RepoInfo:
         from dulwich.repo import Repo
         r = Repo(self._tmpdir)

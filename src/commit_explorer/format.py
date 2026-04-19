@@ -70,6 +70,9 @@ class OutputConfig:
     fmt: str = "text"
     color: str = "auto"
 
+    # File-content mode
+    cat: bool = False
+
     def __post_init__(self) -> None:
         if self.fmt in ("json", "ndjson"):
             self.color = "never"

@@ -578,6 +578,46 @@ async def _show(
             print(f"Error: SHA '{sha}' not found in {owner}/{repo}.", file=sys.stderr)
             sys.exit(1)
 
+        if config.cat:
+            files_content = []
+            for fpath in config.file_filter:
+                print(f"Fetching {fpath}\u2026", file=sys.stderr)
+                content = await asyncio.to_thread(backend.get_file_content, full_sha, fpath)
+                files_content.append((fpath, content))
+
+            if config.fmt in ("json", "ndjson"):
+                data = {
+                    "kind": "file_content",
+                    "repo": f"{owner}/{repo}",
+                    "sha": full_sha,
+                    "files": [
+                        {"path": p, "content": c} for p, c in files_content
+                    ],
+                }
+                _emit_json(data, config, out_stem=f"{full_sha[:7]}-cat")
+            else:
+                stream = _resolve_stream(config)
+                for fpath, content in files_content:
+                    if content is None:
+                        print(
+                            f"Error: '{fpath}' not found in commit {full_sha[:7]}.",
+                            file=sys.stderr,
+                        )
+                        continue
+                    if config.out_dir is not None:
+                        fname = f"{full_sha[:7]}_{os.path.basename(fpath)}"
+                        out_path = os.path.join(config.out_dir, fname)
+                        with open(out_path, "w", encoding="utf-8") as f:
+                            f.write(content)
+                        print(out_path)
+                    else:
+                        if len(config.file_filter) > 1:
+                            stream.write(f"=== {fpath} ===\n")
+                        stream.write(content)
+                        if not content.endswith("\n"):
+                            stream.write("\n")
+            return
+
         print(f"Exporting commit {full_sha[:7]}\u2026", file=sys.stderr)
         detail = await asyncio.to_thread(backend.get_detail, full_sha)
 
@@ -813,6 +853,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "Repeatable."
         ),
     )
+    parser.add_argument(
+        "--cat", action="store_true",
+        help="Show full file content at SHA (requires --show and --file)",
+    )
 
     # Size caps
     parser.add_argument(
@@ -925,6 +969,7 @@ def _build_output_config(args: argparse.Namespace) -> OutputConfig:
         offset=args.offset,
         fmt=args.fmt,
         color=args.color,
+        cat=args.cat,
     )
 
 
@@ -939,6 +984,12 @@ def main() -> None:
         from .init import run_init
         run_init(args.editor_type)
         return
+
+    if args.cat:
+        if not args.show:
+            parser.error("--cat requires --show")
+        if not args.file:
+            parser.error("--cat requires --file")
 
     if args.range and len(args.range) > 2:
         parser.error(
