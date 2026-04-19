@@ -845,6 +845,17 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["auto", "always", "never"],
         help="Colour mode (default: auto; forced never in json/ndjson)",
     )
+
+    # Editor integration
+    parser.add_argument(
+        "--init", action="store_true",
+        help="Download skills into the current project for the chosen editor",
+    )
+    parser.add_argument(
+        "--type", dest="editor_type", default=None,
+        choices=["claude", "windsurf", "cursor", "copilot"],
+        help="Editor target for --init (claude | windsurf | cursor | copilot)",
+    )
     return parser
 
 
@@ -921,6 +932,13 @@ def main() -> None:
     """Entry point for the commit-explorer CLI."""
     parser = _build_parser()
     args = parser.parse_args()
+
+    if args.init:
+        if not args.editor_type:
+            parser.error("--init requires --type (claude | windsurf | cursor | copilot)")
+        from .init import run_init
+        run_init(args.editor_type)
+        return
 
     if args.range and len(args.range) > 2:
         parser.error(
