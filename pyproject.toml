@@ -1,6 +1,6 @@
 [project]
 name = "commit-explorer"
-version = "0.2.0"
+version = "0.2.1"
 description = "CLI and TUI for exploring remote git history; agent-friendly output with editor skill integration"
 requires-python = ">=3.11"
 dependencies = [
