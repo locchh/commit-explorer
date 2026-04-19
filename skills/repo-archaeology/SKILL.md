@@ -39,6 +39,7 @@ previous rung didn't answer the question.
 | 1 | `--summary` | metadata + stat line (≤ 20 lines) |
 | 2 | *(default)* | file list, no diff |
 | 3 | `--file PATH` | diff for one file |
+| 3b | `--file PATH --cat` | **full file content** at that commit |
 | 4 | `--diff` | full diff capped at 500 lines |
 | 5 | `--diff --max-lines 0` | uncapped full diff |
 
@@ -150,6 +151,29 @@ cex owner/repo --show <SHA> --format json        # parseable
 
 SHAs can be short (7+ chars) or full.
 
+### "Show me what a file looked like at a specific commit"
+
+Use `--cat` with `--show` and `--file`. This fetches the blob on demand
+from the partial clone — no full checkout needed.
+
+```bash
+cex owner/repo --show <SHA> --file path/to/file.py --cat
+
+# Multiple files (each block prefixed with === path ===)
+cex owner/repo --show <SHA> --file src/a.py --file src/b.py --cat
+
+# Parseable — "content" key holds the raw file text
+cex owner/repo --show <SHA> --file path/to/file.py --cat --format json
+
+# Write to disk
+cex owner/repo --show <SHA> --file path/to/file.py --cat --out ./out/
+```
+
+`--cat` requires both `--show` and `--file`. Use it instead of `--diff`
+when you need the **complete** file state (not just what changed), e.g.
+to read an old config, reconstruct a deleted file, or compare two
+snapshots side-by-side.
+
 ### "Walk me through a commit range"
 
 ```bash
@@ -207,6 +231,7 @@ as a fallback (`github` default, `gitlab`, `azure`). Tokens live in `.env`:
 |---|---|
 | *(no `--out`)* | Stream to stdout (default, agent-friendly) |
 | `--out PATH` | Write `.txt` file(s) under PATH; prints resolved path |
+| `--cat` | Full file content at SHA (requires `--show` + `--file`) |
 | `--max-lines N` | Cap stdout at N lines (500 default when `--diff`) |
 | `--max-bytes N` | Cap stdout at N bytes |
 | `--limit N` / `--offset M` | Paginate `--export` / `--range` |
